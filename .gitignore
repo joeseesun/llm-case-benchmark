@@ -1,0 +1,13 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+data/contributions.json.bak
+data/benchmark.db
+data/benchmark.db-*
+data/*.db
+task_plan.md
+design-previews/
+design/icon-options-2026-07-09/
