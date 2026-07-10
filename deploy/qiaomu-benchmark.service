@@ -1,0 +1,21 @@
+[Unit]
+Description=Qiaomu Case Benchmark (benchmark.qiaomu.ai)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/qiaomu-apps/llm-case-benchmark
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3168
+# Optional overrides:
+# Environment=BENCHMARK_ADMIN_PASSWORD=...
+# Environment=BENCHMARK_SECRET=...
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

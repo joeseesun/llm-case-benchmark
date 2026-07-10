@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>乔木 LLM 擂台 · 管理后台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/admin.css" />
+</head>
+<body>
+  <div id="login-view" class="login-wrap">
+    <form id="login-form" class="login-card">
+      <div class="brand" style="margin-bottom:16px">
+        <div class="brand-mark"><span></span></div>
+        <div>
+          <h1 style="margin:0;font-size:18px">管理后台</h1>
+          <p style="margin:0;color:var(--muted);font-size:12px">乔木 LLM 擂台</p>
+        </div>
+      </div>
+      <div class="field">
+        <label for="password">密码</label>
+        <input id="password" type="password" required autocomplete="current-password" />
+      </div>
+      <button type="submit" class="primary-btn" style="width:100%">登录</button>
+      <p id="login-error" class="hint" style="color:var(--danger);margin:10px 0 0"></p>
+      <p class="hint" style="margin-top:14px"><a href="/">← 返回前台</a></p>
+    </form>
+  </div>
+
+  <div id="admin-view" class="hidden">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><span></span></div>
+        <div>
+          <h1>Admin · 乔木 LLM 擂台</h1>
+          <p id="admin-stats">—</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button type="button" class="tab-btn" data-panel="dashboard" aria-selected="true">概览</button>
+        <button type="button" class="tab-btn" data-panel="models" aria-selected="false">模型</button>
+        <button type="button" class="tab-btn" data-panel="cases" aria-selected="false">题库</button>
+        <button type="button" class="tab-btn" data-panel="submissions" aria-selected="false">
+          审核 <span id="pending-badge" class="badge hidden">0</span>
+        </button>
+        <button type="button" class="tab-btn" data-panel="password" aria-selected="false">改密</button>
+        <a class="ghost-btn" href="/" style="text-decoration:none">前台</a>
+        <button type="button" class="ghost-btn" id="btn-logout">退出</button>
+      </div>
+    </header>
+
+    <main class="admin-main">
+      <section class="panel" id="panel-dashboard">
+        <h2>概览</h2>
+        <div class="stat-grid" id="stat-grid"></div>
+      </section>
+
+      <section class="panel hidden" id="panel-models">
+        <div class="panel-head">
+          <h2>模型配置</h2>
+          <button type="button" class="primary-btn" id="btn-new-model">新建模型</button>
+        </div>
+        <p class="hint">API Key 加密存储。启用且标记公开后，前台访客可直接用站点模型 Run（受限流）。</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th><th>Model</th><th>Base URL</th><th>Key</th><th>启用</th><th>公开</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="models-tbody"></tbody>
+          </table>
+        </div>
+        <form id="model-form" class="editor-card hidden">
+          <h3 id="model-form-title">编辑模型</h3>
+          <input type="hidden" id="mf-id" />
+          <div class="field"><label>ID</label><input id="mf-id-input" placeholder="site-claude" /></div>
+          <div class="field"><label>显示名</label><input id="mf-label" required /></div>
+          <div class="field"><label>Model ID</label><input id="mf-model" required /></div>
+          <div class="field"><label>Base URL</label><input id="mf-base" required placeholder="https://api.openai.com 或 .../v1" /></div>
+          <div class="field"><label>API Key（留空保留原值，填空字符串可清除请用下方勾选）</label><input id="mf-key" type="password" autocomplete="off" placeholder="不修改请留空" /></div>
+          <label class="check"><input type="checkbox" id="mf-clear-key" /> 清除已保存的 Key</label>
+          <label class="check"><input type="checkbox" id="mf-enabled" checked /> 启用</label>
+          <label class="check"><input type="checkbox" id="mf-public" checked /> 对前台公开</label>
+          <div class="field"><label>排序</label><input id="mf-sort" type="number" value="0" /></div>
+          <div class="field"><label>备注</label><input id="mf-notes" /></div>
+          <div class="modal-actions">
+            <button type="button" class="ghost-btn" id="mf-cancel">取消</button>
+            <button type="submit" class="primary-btn">保存</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel hidden" id="panel-cases">
+        <div class="panel-head">
+          <h2>题库管理</h2>
+          <button type="button" class="primary-btn" id="btn-new-case">新建题目</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th><th>标题</th><th>分类</th><th>难度</th><th>状态</th><th>来源</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="cases-tbody"></tbody>
+          </table>
+        </div>
+        <form id="case-form" class="editor-card hidden">
+          <h3 id="case-form-title">编辑题目</h3>
+          <div class="field"><label>ID</label><input id="cf-id" required /></div>
+          <div class="field"><label>标题</label><input id="cf-title" required /></div>
+          <div class="field">
+            <label>分类</label>
+            <select id="cf-category">
+              <option value="creative-writing">创意写作</option>
+              <option value="frontend">前端网页</option>
+            </select>
+          </div>
+          <div class="field"><label>摘要</label><input id="cf-summary" /></div>
+          <div class="field">
+            <label>难度</label>
+            <select id="cf-difficulty">
+              <option value="easy">easy</option>
+              <option value="medium">medium</option>
+              <option value="hard">hard</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>输出类型</label>
+            <select id="cf-output">
+              <option value="text">text</option>
+              <option value="html">html</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>状态</label>
+            <select id="cf-status">
+              <option value="published">published</option>
+              <option value="draft">draft</option>
+              <option value="archived">archived</option>
+            </select>
+          </div>
+          <div class="field"><label>来源</label><input id="cf-source" placeholder="official / community" /></div>
+          <div class="field"><label>作者</label><input id="cf-author" /></div>
+          <div class="field"><label>标签（逗号）</label><input id="cf-tags" /></div>
+          <div class="field"><label>评分维度（逗号）</label><input id="cf-rubric" /></div>
+          <div class="field"><label>System</label><textarea id="cf-system" class="mono"></textarea></div>
+          <div class="field"><label>Prompt</label><textarea id="cf-prompt" class="mono" required></textarea></div>
+          <div class="field"><label>排序</label><input id="cf-sort" type="number" value="0" /></div>
+          <div class="modal-actions">
+            <button type="button" class="ghost-btn" id="cf-cancel">取消</button>
+            <button type="submit" class="primary-btn">保存</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel hidden" id="panel-submissions">
+        <div class="panel-head">
+          <h2>投稿审核</h2>
+          <div class="filters" id="sub-filters">
+            <button type="button" class="chip" data-status="pending" aria-pressed="true">待审</button>
+            <button type="button" class="chip" data-status="approved" aria-pressed="false">已通过</button>
+            <button type="button" class="chip" data-status="rejected" aria-pressed="false">已拒绝</button>
+            <button type="button" class="chip" data-status="all" aria-pressed="false">全部</button>
+          </div>
+        </div>
+        <div id="submissions-list" class="sub-list"></div>
+      </section>
+
+      <section class="panel hidden" id="panel-password">
+        <h2>修改密码</h2>
+        <form id="password-form" class="editor-card" style="display:block">
+          <div class="field"><label>当前密码</label><input id="pw-cur" type="password" required /></div>
+          <div class="field"><label>新密码（≥8 位）</label><input id="pw-new" type="password" required minlength="8" /></div>
+          <button type="submit" class="primary-btn">更新密码</button>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/admin.js"></script>
+</body>
+</html>

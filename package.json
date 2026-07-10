@@ -1,0 +1,27 @@
+{
+  "name": "llm-case-benchmark",
+  "version": "1.1.0",
+  "description": "Open-source multi-model prompt benchmark for writing and frontend tasks",
+  "license": "MIT",
+  "author": "向阳乔木 <https://qiaomu.ai>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joeseesun/llm-case-benchmark.git"
+  },
+  "homepage": "https://benchmark.qiaomu.ai/",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.5",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2"
+  }
+}
