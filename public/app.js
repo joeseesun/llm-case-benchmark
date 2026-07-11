@@ -511,7 +511,7 @@
       const body =
         normalizedMode === 'source'
           ? `<div class="col-body"><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
-          : `<div class="col-body" style="padding:8px"><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="preview"></iframe></div>`;
+          : `<div class="col-body preview-body"><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="preview"></iframe></div>`;
       return { tabs, body };
     }
     const body =

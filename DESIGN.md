@@ -28,6 +28,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Published snapshot bar：精选结果版本、运行时间、成功/失败数、精确模型标识
 - Prompt evidence panel：完整 Prompt 直接显示在题目标题下方，不折叠；评分标准作为次级信息独立披露
 - Model result columns (2–4) with header + body：公开页不依赖访客的本地模型配置
+- Bounded result reader：结果卡只限制展示高度，不截断模型输出；源码、Markdown、流式片段与错误中的部分输出超过上限后只在正文区滚动，模型头、视图切换与操作栏始终可见
 - Independent result lifecycle：每个模型卡片独立进入运行、完成、失败与可预览状态；其他模型的流式更新不得重建已完成 iframe
 - Error recovery row：实时题库与自由对比的失败卡片原位显示“重新运行”；单卡重试不得中断仍在生成的兄弟模型，已发布快照保持不可变
 - Fullscreen artifact stage：打开后焦点直接进入 iframe，Space / WASD / 方向键由生成的 HTML 原生处理；关闭按钮保留为显式退出路径
@@ -58,6 +59,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Do: distinguish “暂无已发布结果” from search no-results, loading and network error
 - Do: sandboxed iframe for frontend HTML previews
 - Do: reveal each completed model immediately while the remaining models keep running
+- Do: preserve every output byte in the result DOM; long output uses an internal reading scroll instead of `line-clamp`、省略号或“展开更多”
 - Do: keep a completed preview iframe stable so its focus, game state and internal event listeners survive sibling updates
 - Do: place the recovery action beside the failed result; an error message without a usable next step is incomplete
 - Don't: let parent modal controls retain keyboard focus after an interactive HTML preview opens
@@ -70,6 +72,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 ## 8. Responsive
 - Break at 900px to single column
 - Public result cards stack at 900px; model identity and snapshot metadata wrap without truncating the exact model ID
+- Result card height cap follows the dynamic viewport; mobile keeps a single bounded reading pane so scrolling code does not widen or drag the whole page
 - min-h 100dvh; no horizontal page scroll
 
 ## 9. Motion

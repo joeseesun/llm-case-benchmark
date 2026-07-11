@@ -7,6 +7,7 @@ const source = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf
 const indexSource = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
 const adminSource = fs.readFileSync(path.resolve(__dirname, '../public/admin.js'), 'utf8');
 const serverSource = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
+const stylesSource = fs.readFileSync(path.resolve(__dirname, '../public/styles.css'), 'utf8');
 
 function functionBody(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -127,6 +128,29 @@ test('fullscreen HTML previews receive keyboard focus without weakening isolatio
   assert.match(fullscreen, /openModal\('modal-preview-fs',\s*[^)]+\)/);
   assert.match(modal, /function openModal\(id,\s*initialFocus\s*=\s*null\)/);
   assert.match(modal, /initialFocus\s*&&\s*overlay\.contains\(initialFocus\)[\s\S]*\?\s*initialFocus[\s\S]*:\s*overlay\.querySelector/);
+});
+
+test('result cards bound long output without truncating the generated content', () => {
+  const cardRule = /\n\.col\s*\{([^}]*)\}/.exec(stylesSource)?.[1] || '';
+  const bodyRule = /\n\.col-body\s*\{([^}]*)\}/.exec(stylesSource)?.[1] || '';
+  const renderSurface = functionBody('renderResultSurface');
+  const renderRunning = functionBody('renderRunningBody');
+  const renderError = functionBody('renderErrorBody');
+
+  assert.match(stylesSource, /--result-card-max-height:\s*clamp\(/);
+  assert.match(cardRule, /max-height:\s*var\(--result-card-max-height\)/);
+  assert.match(bodyRule, /min-height:\s*0/);
+  assert.match(bodyRule, /overflow:\s*auto/);
+  assert.match(bodyRule, /scrollbar-gutter:\s*stable/);
+  assert.doesNotMatch(bodyRule, /line-clamp|text-overflow/);
+  assert.match(renderSurface, /class="col-body preview-body"/);
+  assert.match(renderSurface, /escapeHtml\(artifact\.source\)/);
+  assert.match(renderSurface, /escapeHtml\(content\)/);
+  assert.match(renderSurface, /renderMarkdown\(content\)/);
+  assert.match(renderRunning, /escapeHtml\(content\)/);
+  assert.match(renderError, /escapeHtml\(partial\)/);
+  assert.doesNotMatch(renderSurface, /\.slice\(|\.substring\(|\.substr\(/);
+  assert.doesNotMatch(renderRunning + renderError, /\.slice\(|\.substring\(|\.substr\(/);
 });
 
 test('failed live cards expose the correct per-source rerun action', () => {
