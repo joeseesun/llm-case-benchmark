@@ -32,6 +32,8 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Independent result lifecycle：每个模型卡片独立进入运行、完成、失败与可预览状态；其他模型的流式更新不得重建已完成 iframe
 - Error recovery row：实时题库与自由对比的失败卡片原位显示“重新运行”；单卡重试不得中断仍在生成的兄弟模型，已发布快照保持不可变
 - Fullscreen artifact stage：打开后焦点直接进入 iframe，Space / WASD / 方向键由生成的 HTML 原生处理；关闭按钮保留为显式退出路径
+- Archive result viewer：测试记录与贡献详情沿用结果卡的预览语义；显式 HTML 默认展示沙箱预览，源码作为每张卡独立切换项，切换其他卡不得重建或重置当前 iframe
+- Isolated new-window preview：HTML 卡片的外链动作打开可交互预览而非源码；顶层只承载可信空壳，模型 HTML 始终位于无同源权限的 sandbox iframe 内
 - Admin publish action：管理员运行成功后显示“发布为题库结果”，二次确认后生成不可变快照
 - Run bar：“用本题复跑”为次级动作，管理员的发布动作只在存在成功结果时出现
 - Settings drawer for API keys (localStorage only)
@@ -58,11 +60,14 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Do: keep the last published snapshot visible while an admin reruns or while refresh fails
 - Do: distinguish “暂无已发布结果” from search no-results, loading and network error
 - Do: sandboxed iframe for frontend HTML previews
+- Do: reuse the same sandboxed preview contract in live results, published snapshots, run history, contributions and new-window views
+- Do: label the external action “新窗口打开预览” for renderable HTML and retain “新窗口打开原文” only for text output
 - Do: reveal each completed model immediately while the remaining models keep running
 - Do: preserve every output byte in the result DOM; long output uses an internal reading scroll instead of `line-clamp`、省略号或“展开更多”
 - Do: keep a completed preview iframe stable so its focus, game state and internal event listeners survive sibling updates
 - Do: place the recovery action beside the failed result; an error message without a usable next step is incomplete
 - Don't: let parent modal controls retain keyboard focus after an interactive HTML preview opens
+- Don't: open model HTML as a top-level Blob or write it directly into an about:blank window
 - Don't: rebuild the whole comparison grid for a single model's stream delta, timer tick or completion
 - Don't: store API keys on server
 - Don't: auto-publish every admin run, user history, edited draft or partial in-progress output
