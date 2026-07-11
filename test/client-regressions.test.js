@@ -340,3 +340,53 @@ test('new-window HTML actions open an isolated rendered preview instead of top-l
   assert.match(archiveClick, /openIsolatedPreviewDocument\(iframe\.srcdoc, title\)/);
   assert.doesNotMatch(source, /window\.open\('',\s*'_blank'\)|document\.write\(/);
 });
+
+test('free compare prompt library replaces prompt state without retaining stale results', () => {
+  const openLibrary = functionBody('openPromptLibrary');
+  const applyCase = functionBody('applyPromptLibraryCase');
+  const renderLibrary = functionBody('renderPromptLibrary');
+  assert.match(indexSource, /id="btn-prompt-library"[^>]*aria-label="打开测试案例库"/);
+  assert.match(indexSource, /id="modal-prompt-library"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(indexSource, /id="prompt-library-count"[^>]*aria-live="polite"/);
+  assert.doesNotMatch(indexSource, /id="prompt-library-list"[^>]*aria-live/);
+  assert.ok(indexSource.indexOf('/providers.js') < indexSource.indexOf('/prompt-library.js'));
+  assert.ok(indexSource.indexOf('/prompt-library.js') < indexSource.indexOf('/app.js'));
+  assert.match(openLibrary, /openModal\('modal-prompt-library', search\)/);
+  assert.match(applyCase, /if \(state\.testRunning\)/);
+  assert.match(applyCase, /prompt\.value = item\.prompt/);
+  assert.match(applyCase, /outputType\.value = item\.outputType === 'html' \? 'html' : 'text'/);
+  assert.match(applyCase, /state\.testResults = \{\}/);
+  assert.match(applyCase, /state\.testViewModes = \{\}/);
+  assert.match(applyCase, /#test-run-status/);
+  assert.match(renderLibrary, /escapeHtml\(item\.prompt\)/);
+});
+
+test('administrator record deletion uses authenticated routes and a custom confirmation dialog', () => {
+  const history = functionBody('renderHistoryDetail');
+  const openDelete = functionBody('openDeleteRecordDialog');
+  const confirmDelete = functionBody('confirmDeleteRecord');
+  assert.match(history, /state\.isAdmin[\s\S]*data-delete-history/);
+  assert.match(indexSource, /id="btn-delete-contribution"/);
+  assert.match(indexSource, /id="modal-delete-record"[^>]*role="dialog"/);
+  assert.match(openDelete, /state\.pendingDelete = \{ kind, id, label \}/);
+  assert.match(confirmDelete, /\/api\/admin\/contributions/);
+  assert.match(confirmDelete, /\/api\/admin\/run-history/);
+  assert.match(confirmDelete, /method: 'DELETE'/);
+  assert.doesNotMatch(source, /\b(?:window\.)?confirm\s*\(/);
+});
+
+test('site quota excludes caller-owned keys and authenticated administrators', () => {
+  assert.match(serverSource, /if \(target\?\.source !== 'site'\)[\s\S]*caller-key-exempt/);
+  assert.match(serverSource, /if \(isAdminRequest\(req\)\)[\s\S]*admin-exempt/);
+  assert.match(serverSource, /code: 'site_rate_limit'/);
+  assert.match(serverSource, /res\.setHeader\('Retry-After'/);
+  assert.match(serverSource, /async function assertSafeCustomBaseUrl/);
+  assert.match(serverSource, /privateNetworkBlockList/);
+  assert.match(serverSource, /new Agent\([\s\S]*lookup\(_hostname, options, callback\)/);
+  assert.match(serverSource, /undiciFetch\(endpoint,[\s\S]*dispatcher: dispatcher \|\| undefined/);
+  assert.match(serverSource, /await closeDispatcher\(customDispatcher\)/);
+  assert.match(serverSource, /function acquireCustomRun/);
+  assert.match(serverSource, /code: 'caller_concurrency_limit'/);
+  assert.match(serverSource, /redirect: 'error'/);
+  assert.doesNotMatch(serverSource, /调用过于频繁，请稍后再试/);
+});

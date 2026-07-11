@@ -7,6 +7,7 @@
   const PRESETS = window.CB_AI_PROVIDER_PRESETS || [];
   const PRESET_MAP = window.CB_AI_PROVIDER_MAP || {};
   const DEFAULT_PRESET = window.CB_DEFAULT_AI_PRESET_ID || 'deepseek';
+  const PROMPT_LIBRARY = Array.isArray(window.CB_PROMPT_LIBRARY) ? window.CB_PROMPT_LIBRARY : [];
   const HTML_MIN_TOKENS = 8192;
   const HTML_OUTPUT_SYSTEM =
     '只输出一个可直接放进 iframe 预览的完整 HTML 或 SVG。不要解释、不要 Markdown、不要代码围栏。若用户要求 SVG 动画，优先输出一个完整 <svg ...>...</svg>，包含必要的 <style>、<animate> 或 <animateTransform>，必须闭合所有标签。';
@@ -53,6 +54,10 @@
     promptEditing: false,
     caseDraftPrompt: '',
     hasRunOnce: false,
+    promptLibraryCategory: '全部',
+    promptLibraryQuery: '',
+    selectedContributionId: '',
+    pendingDelete: null,
   };
   let runTicker = null;
   const modalReturnFocus = new Map();
@@ -78,6 +83,7 @@
       copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
       maximize: '<path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/>',
       external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+      trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/>',
     };
     return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ''}</svg>`;
   }
@@ -1508,6 +1514,8 @@
       return {
         status: 'error',
         error: data.error || `HTTP ${res.status}`,
+        errorCode: data.code || '',
+        retryAfterMs: data.retryAfterMs || null,
         latencyMs: data.latencyMs,
         startedAt,
         finishedAt: Date.now(),
@@ -1548,6 +1556,8 @@
       return {
         status: 'error',
         error: data.error || `HTTP ${res.status}`,
+        errorCode: data.code || '',
+        retryAfterMs: data.retryAfterMs || null,
         latencyMs: data.latencyMs,
         startedAt,
         finishedAt: Date.now(),
@@ -1674,6 +1684,12 @@
     }
   }
 
+  function batchRunFailureMessage(results, fallback) {
+    const errors = Object.values(results || {}).filter((row) => row?.status === 'error');
+    const siteLimit = errors.find((row) => row.errorCode === 'site_rate_limit');
+    return siteLimit?.error || fallback;
+  }
+
   async function runAll() {
     const c = activeCase();
     if (!c || state.running) return;
@@ -1776,7 +1792,7 @@
         ? `跑完了，但历史记录保存失败：${history.error}`
         : ok
           ? `跑完了，${ok} 个模型有结果`
-          : '全部失败，请检查 Key / 接口'
+          : batchRunFailureMessage(runResults, '全部失败，请检查 Key / 接口')
     );
   }
 
@@ -1971,6 +1987,7 @@
     const overlay = $(`#${id}`);
     if (!overlay) return;
     overlay.classList.remove('open');
+    if (id === 'modal-delete-record') state.pendingDelete = null;
     const trigger = modalReturnFocus.get(id);
     modalReturnFocus.delete(id);
     if (trigger && document.contains(trigger)) trigger.focus();
@@ -2504,6 +2521,89 @@
     return true;
   }
 
+  function normalizePromptLibraryText(value) {
+    return String(value || '').toLocaleLowerCase('zh-CN').replace(/\s+/g, ' ').trim();
+  }
+
+  function promptLibraryMatches(item) {
+    if (state.promptLibraryCategory !== '全部' && item.category !== state.promptLibraryCategory) return false;
+    const query = normalizePromptLibraryText(state.promptLibraryQuery);
+    if (!query) return true;
+    return normalizePromptLibraryText([
+      item.title,
+      item.category,
+      item.summary,
+      ...(item.tags || []),
+      item.prompt,
+    ].join(' ')).includes(query);
+  }
+
+  function renderPromptLibrary() {
+    const filters = $('#prompt-library-filters');
+    const list = $('#prompt-library-list');
+    if (!filters || !list) return;
+    const categories = ['全部', ...new Set(PROMPT_LIBRARY.map((item) => item.category).filter(Boolean))];
+    filters.innerHTML = categories
+      .map((category) => `<button type="button" class="chip" data-prompt-category="${escapeHtml(category)}" aria-pressed="${category === state.promptLibraryCategory ? 'true' : 'false'}">${escapeHtml(category)}</button>`)
+      .join('');
+
+    const matches = PROMPT_LIBRARY.filter(promptLibraryMatches);
+    $('#prompt-library-count').textContent = `${matches.length} / ${PROMPT_LIBRARY.length} 个案例`;
+    if (!matches.length) {
+      list.innerHTML = `<div class="prompt-library-empty">
+        <strong>没有匹配的案例</strong>
+        <span>换个关键词，或清除分类与搜索条件。</span>
+        <button type="button" class="ghost-btn mini" data-clear-prompt-filters>清除筛选</button>
+      </div>`;
+      return;
+    }
+    list.innerHTML = matches
+      .map((item) => `<button type="button" class="prompt-library-card" data-prompt-case="${escapeHtml(item.id)}" ${state.testRunning ? 'disabled' : ''}>
+        <span class="prompt-library-card-head">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span class="tag">${item.outputType === 'html' ? 'HTML' : '文本'}</span>
+        </span>
+        <span class="prompt-library-card-summary">${escapeHtml(item.summary)}</span>
+        <span class="prompt-library-card-prompt">${escapeHtml(item.prompt)}</span>
+        <span class="prompt-library-card-foot">
+          <span>${escapeHtml(item.category)} · ${escapeHtml((item.tags || []).slice(0, 2).join(' / '))}</span>
+          <span class="prompt-library-use">使用此案例</span>
+        </span>
+      </button>`)
+      .join('');
+  }
+
+  function openPromptLibrary() {
+    state.promptLibraryQuery = '';
+    state.promptLibraryCategory = '全部';
+    const search = $('#prompt-library-search');
+    if (search) search.value = '';
+    renderPromptLibrary();
+    openModal('modal-prompt-library', search);
+  }
+
+  function applyPromptLibraryCase(id) {
+    if (state.testRunning) {
+      toast('模型运行中，完成后再更换测试案例');
+      return;
+    }
+    const item = PROMPT_LIBRARY.find((entry) => entry.id === id);
+    if (!item) return;
+    const prompt = $('#test-prompt');
+    const outputType = $('#test-output-type');
+    prompt.value = item.prompt;
+    outputType.value = item.outputType === 'html' ? 'html' : 'text';
+    state.testOutputType = outputType.value;
+    state.testResults = {};
+    state.testViewModes = {};
+    $('#test-run-status').textContent = `已载入「${item.title}」，可选择模型运行`;
+    renderTestCompare();
+    updateResultActions();
+    closeModal('modal-prompt-library');
+    prompt.focus({ preventScroll: true });
+    toast(`已插入「${item.title}」`);
+  }
+
   function renderTestModelPicker() {
     const list = $('#test-model-list');
     if (!list) return;
@@ -2646,7 +2746,9 @@
       ? `${ok} 成功 · ${running} 运行中${fail ? ` · ${fail} 失败` : ''}`
       : `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
     updateResultActions();
-    toast(ok ? `对比完成，${ok} 个模型有结果` : '全部失败，请检查模型配置');
+    toast(ok
+      ? `对比完成，${ok} 个模型有结果`
+      : batchRunFailureMessage(state.testResults, '全部失败，请检查模型配置'));
   }
 
   function successfulTestRows() {
@@ -2857,6 +2959,7 @@
   function showContribution(id) {
     const c = state.contributions.find((x) => x.id === id);
     if (!c) return;
+    state.selectedContributionId = c.id;
     $('#detail-title').textContent = c.caseTitle || c.caseId;
     $('#detail-meta').textContent = `${c.author || '匿名'} · ${new Date(c.createdAt).toLocaleString()} · ${categoryLabel(c.category)}`;
     $('#detail-prompt').textContent = c.prompt || '';
@@ -2865,6 +2968,7 @@
     box.innerHTML = (c.results || [])
       .map((r, index) => renderArchivedResultCard(r, `contribution-result-${index}`, { textPreview: 'plain' }))
       .join('');
+    $('#btn-delete-contribution')?.classList.toggle('hidden', !state.isAdmin);
     openModal('modal-detail');
   }
 
@@ -2876,8 +2980,13 @@
     }
     detail.innerHTML = `
       <div class="history-detail-head">
-        <strong>${escapeHtml(item.caseTitle || item.caseId)}</strong>
-        <span>${escapeHtml(new Date(item.createdAt).toLocaleString())}</span>
+        <span class="history-detail-title">
+          <strong>${escapeHtml(item.caseTitle || item.caseId)}</strong>
+          <span>${escapeHtml(new Date(item.createdAt).toLocaleString())}</span>
+        </span>
+        ${state.isAdmin ? `<span class="history-detail-actions">
+          <button type="button" class="history-delete-btn" data-delete-history="${escapeHtml(item.id)}" aria-label="删除这条测试记录" data-tooltip="删除测试记录">${icon('trash')}</button>
+        </span>` : ''}
       </div>
       <pre class="history-prompt">${escapeHtml(item.prompt || '')}</pre>
       <div class="compare history-compare">
@@ -2919,6 +3028,74 @@
     } catch (err) {
       $('#history-list').innerHTML = `<div class="empty-state slim"><strong>加载失败</strong><span>${escapeHtml(err.message || '')}</span><button type="button" class="ghost-btn mini" data-history-retry>重新加载</button></div>`;
       renderHistoryDetail(null);
+    }
+  }
+
+  function openDeleteRecordDialog({ kind, id, label }) {
+    if (!state.isAdmin || !id) return;
+    const isContribution = kind === 'contribution';
+    state.pendingDelete = { kind, id, label };
+    $('#delete-record-title').textContent = isContribution ? '删除这条贡献？' : '删除这条测试记录？';
+    $('#delete-record-description').textContent = `将永久删除「${label || id}」及其中的全部模型结果。此操作无法恢复。`;
+    const confirmButton = $('#btn-confirm-delete-record');
+    confirmButton.textContent = isContribution ? '删除贡献' : '删除记录';
+    confirmButton.disabled = false;
+    openModal('modal-delete-record', $('#btn-cancel-delete-record'));
+  }
+
+  async function confirmDeleteRecord() {
+    const target = state.pendingDelete;
+    if (!state.isAdmin || !target) return;
+    const button = $('#btn-confirm-delete-record');
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = '删除中…';
+    const endpoint = target.kind === 'contribution'
+      ? `/api/admin/contributions/${encodeURIComponent(target.id)}`
+      : `/api/admin/run-history/${encodeURIComponent(target.id)}`;
+    try {
+      const res = await fetch(endpoint, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 401) {
+          state.isAdmin = false;
+          $('#admin-entry')?.classList.add('hidden');
+          $('#btn-delete-contribution')?.classList.add('hidden');
+        }
+        const error = new Error(data.error || `HTTP ${res.status}`);
+        error.status = res.status;
+        throw error;
+      }
+      closeModal('modal-delete-record');
+      state.pendingDelete = null;
+      if (target.kind === 'contribution') {
+        closeModal('modal-detail');
+        state.selectedContributionId = '';
+        await loadGallery();
+        toast('贡献已删除');
+      } else {
+        await loadHistory();
+        toast('测试记录已删除');
+      }
+    } catch (err) {
+      if (err.status === 401) {
+        closeModal('modal-delete-record');
+        if (target.kind === 'history') renderHistoryList();
+      }
+      if (err.status === 404) {
+        closeModal('modal-delete-record');
+        state.pendingDelete = null;
+        if (target.kind === 'contribution') {
+          closeModal('modal-detail');
+          await loadGallery();
+        } else {
+          await loadHistory();
+        }
+      }
+      toast(err?.message || '删除失败');
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
     }
   }
 
@@ -3119,6 +3296,31 @@
     $('#test-output-type').addEventListener('change', () => {
       state.testOutputType = $('#test-output-type').value === 'html' ? 'html' : 'text';
       renderTestCompare();
+    });
+
+    $('#btn-prompt-library').addEventListener('click', openPromptLibrary);
+    $('#prompt-library-search').addEventListener('input', (e) => {
+      state.promptLibraryQuery = e.target.value;
+      renderPromptLibrary();
+    });
+    $('#prompt-library-filters').addEventListener('click', (e) => {
+      const button = e.target.closest('[data-prompt-category]');
+      if (!button) return;
+      state.promptLibraryCategory = button.dataset.promptCategory;
+      renderPromptLibrary();
+    });
+    $('#prompt-library-list').addEventListener('click', (e) => {
+      const clear = e.target.closest('[data-clear-prompt-filters]');
+      if (clear) {
+        state.promptLibraryCategory = '全部';
+        state.promptLibraryQuery = '';
+        $('#prompt-library-search').value = '';
+        renderPromptLibrary();
+        $('#prompt-library-search').focus();
+        return;
+      }
+      const button = e.target.closest('[data-prompt-case]');
+      if (button) applyPromptLibraryCase(button.dataset.promptCase);
     });
 
     $('#btn-test-run').addEventListener('click', runPromptTest);
@@ -3351,6 +3553,27 @@
     $('#detail-compare').addEventListener('keydown', handleArchivedResultKeydown);
     $('#history-detail').addEventListener('click', handleArchivedResultClick);
     $('#history-detail').addEventListener('keydown', handleArchivedResultKeydown);
+    $('#btn-delete-contribution').addEventListener('click', () => {
+      const contribution = state.contributions.find((item) => item.id === state.selectedContributionId);
+      if (!contribution) return;
+      openDeleteRecordDialog({
+        kind: 'contribution',
+        id: contribution.id,
+        label: contribution.caseTitle || contribution.caseId || contribution.id,
+      });
+    });
+    $('#btn-confirm-delete-record').addEventListener('click', confirmDeleteRecord);
+    $('#history-detail').addEventListener('click', (e) => {
+      const button = e.target.closest('[data-delete-history]');
+      if (!button) return;
+      const item = state.history.find((entry) => entry.id === button.dataset.deleteHistory);
+      if (!item) return;
+      openDeleteRecordDialog({
+        kind: 'history',
+        id: item.id,
+        label: item.caseTitle || item.caseId || item.id,
+      });
+    });
 
     $('#history-list')?.addEventListener('click', (e) => {
       if (e.target.closest('[data-history-retry]')) {
