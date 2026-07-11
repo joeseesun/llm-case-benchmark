@@ -288,8 +288,9 @@ a:hover { text-decoration: underline; }
 
 .prompt-box {
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
-  padding: 12px 14px; box-shadow: var(--shadow);
+  padding: 13px 14px; box-shadow: var(--shadow);
 }
+.prompt-panel { min-width: 0; }
 .prompt-box .ph {
   display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px;
 }
@@ -297,10 +298,11 @@ a:hover { text-decoration: underline; }
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.05em;
   text-transform: uppercase; color: var(--muted);
 }
+.prompt-copy { padding: 4px 8px; font-size: 11px; flex: 0 0 auto; }
 .prompt-box pre {
   margin: 0; white-space: pre-wrap; word-break: break-word;
-  font-family: var(--font-ui); font-size: 13px; line-height: 1.6;
-  color: var(--text); max-height: 160px; overflow: auto;
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.7;
+  color: var(--text); max-width: 65ch; text-wrap: pretty;
 }
 
 .rubric { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -565,47 +567,39 @@ a:hover { text-decoration: underline; }
   gap: 12px;
   padding: 0 18px 24px;
 }
-.prompt-disclosure,
 .snapshot-history {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
-.prompt-disclosure > summary {
+.rubric-disclosure {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.rubric-disclosure > summary {
   list-style: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 13px 14px;
+  padding: 11px 0 0;
   cursor: pointer;
   user-select: none;
 }
-.prompt-disclosure > summary::-webkit-details-marker { display: none; }
-.prompt-disclosure > summary > span:first-child { display: grid; gap: 2px; }
-.prompt-disclosure > summary strong { font-size: 13px; font-weight: 600; }
-.prompt-disclosure > summary small { color: var(--muted); font-size: 11px; }
+.rubric-disclosure > summary::-webkit-details-marker { display: none; }
+.rubric-disclosure > summary > span:first-child { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.rubric-disclosure > summary strong { font-size: 12px; font-weight: 600; }
+.rubric-disclosure > summary small { color: var(--muted); font-size: 11px; }
 .disclosure-action {
   color: var(--accent-strong);
   font-size: 11px;
   font-weight: 600;
 }
-.prompt-disclosure[open] .disclosure-action::before { content: "收起"; }
-.prompt-disclosure[open] .disclosure-action { font-size: 0; }
-.prompt-disclosure[open] .disclosure-action::before { font-size: 11px; }
-.prompt-disclosure-body {
-  display: grid;
-  gap: 10px;
-  padding: 0 14px 14px;
-  border-top: 1px solid var(--line);
-}
-.prompt-disclosure-body .prompt-box {
-  margin-top: 14px;
-  border-radius: 8px;
-  box-shadow: none;
-  background: var(--bg);
-}
+.rubric-disclosure[open] .disclosure-action::before { content: "收起"; }
+.rubric-disclosure[open] .disclosure-action { font-size: 0; }
+.rubric-disclosure[open] .disclosure-action::before { font-size: 11px; }
+.rubric-disclosure .rubric { margin-top: 10px; }
 
 .snapshot-history { padding: 14px; }
 .snapshot-history-head {

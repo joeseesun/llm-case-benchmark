@@ -803,7 +803,8 @@ app.post('/api/case-submissions', async (req, res) => {
         .map((t) => t.trim())
         .filter(Boolean)
         .slice(0, 10);
-  let outputType = body.outputType === 'html' ? 'html' : 'text';
+  const hasExplicitOutputType = body.outputType === 'html' || body.outputType === 'text';
+  let outputType = hasExplicitOutputType ? body.outputType : '';
   let enriched = false;
   let enrichNote = '';
 
@@ -825,7 +826,7 @@ app.post('/api/case-submissions', async (req, res) => {
           if (!tags.length) tags = meta.tags;
           if (!system) system = meta.system;
           if (!rubric.length) rubric = meta.rubric;
-          if (!body.outputType) outputType = meta.outputType;
+          if (!hasExplicitOutputType) outputType = meta.outputType;
           enriched = true;
           enrichNote = `字段由 ${meta.enrichedBy || cred.model} 自动补全`;
         }

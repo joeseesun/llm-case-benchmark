@@ -818,7 +818,6 @@
     const prompt = $('#case-prompt');
     box.classList.toggle('hidden', !state.isAdmin || !state.promptEditing);
     prompt?.classList.toggle('hidden', state.isAdmin && state.promptEditing);
-    if (state.isAdmin && state.promptEditing) $('#prompt-details').open = true;
     if (!state.isAdmin) {
       $('#btn-copy-prompt').textContent = '复制提示词';
       return;
@@ -961,6 +960,10 @@
       ? '调整搜索或筛选条件后继续。'
       : '管理员完成标准题目运行并确认发布后，结果会自动出现在这里。';
     $('#case-heading-tags').innerHTML = '';
+    $('#case-prompt-panel').classList.add('hidden');
+    $('#case-prompt').textContent = '';
+    $('#case-rubric').innerHTML = '';
+    $('#rubric-details').classList.add('hidden');
     state.publishedRun = null;
     state.publishedHistory = [];
     state.publishedLoading = false;
@@ -981,6 +984,7 @@
     }
     $('#case-title').textContent = c.title;
     $('#case-summary').textContent = c.summary || '';
+    $('#case-prompt-panel').classList.remove('hidden');
     $('#case-heading-tags').innerHTML = [
       categoryLabel(c.category),
       c.difficulty || '',
@@ -1000,6 +1004,8 @@
     $('#case-rubric').innerHTML = visibleRubric
       .map((r) => `<i>${escapeHtml(r)}</i>`)
       .join('');
+    $('#case-rubric-meta').textContent = `${visibleRubric.length} 个评测维度`;
+    $('#rubric-details').classList.toggle('hidden', visibleRubric.length === 0);
     renderSnapshotMeta();
     renderSnapshotHistory();
     renderModelStrip();

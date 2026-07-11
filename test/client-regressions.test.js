@@ -41,9 +41,9 @@ test('result identity keeps the configured model authoritative', () => {
 });
 
 test('administrator edits the original prompt panel in place', () => {
-  const promptBoxStart = indexSource.indexOf('<div class="prompt-box">');
+  const promptBoxStart = indexSource.indexOf('id="case-prompt-panel"');
   const editorStart = indexSource.indexOf('id="admin-prompt-editor"');
-  const promptBoxEnd = indexSource.indexOf('<div class="rubric"', promptBoxStart);
+  const promptBoxEnd = indexSource.indexOf('id="rubric-details"', promptBoxStart);
   assert.ok(promptBoxStart >= 0 && editorStart > promptBoxStart && editorStart < promptBoxEnd);
   assert.doesNotMatch(indexSource, />管理员编辑</);
 });
@@ -59,7 +59,20 @@ test('published results load before relying on locally configured model slots', 
   assert.match(body, /const slots = displaySlots\(\)/);
   assert.match(body, /state\.publishedRun/);
   assert.match(indexSource, /id="snapshot-strip"/);
-  assert.ok(indexSource.indexOf('id="compare"') < indexSource.indexOf('id="prompt-details"'));
+  assert.ok(indexSource.indexOf('id="case-title"') < indexSource.indexOf('id="case-prompt-panel"'));
+  assert.ok(indexSource.indexOf('id="case-prompt-panel"') < indexSource.indexOf('id="snapshot-strip"'));
+  assert.ok(indexSource.indexOf('id="snapshot-strip"') < indexSource.indexOf('id="compare"'));
+  assert.doesNotMatch(indexSource, /id="prompt-details"/);
+});
+
+test('case prompt is always visible while scoring criteria remain secondary', () => {
+  const panelStart = indexSource.indexOf('id="case-prompt-panel"');
+  const promptStart = indexSource.indexOf('id="case-prompt"', panelStart);
+  const rubricStart = indexSource.indexOf('<details class="rubric-disclosure', panelStart);
+  assert.ok(panelStart >= 0 && promptStart > panelStart && rubricStart > promptStart);
+  assert.doesNotMatch(indexSource.slice(panelStart, promptStart), /<details/);
+  assert.match(functionBody('renderNoCaseStage'), /case-prompt-panel.*classList\.add\('hidden'\)/s);
+  assert.match(functionBody('renderStage'), /case-prompt-panel.*classList\.remove\('hidden'\)/s);
 });
 
 test('administrator explicitly publishes a completed run', () => {

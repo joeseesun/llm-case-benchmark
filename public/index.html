@@ -66,6 +66,33 @@
             </div>
             <div class="case-heading-tags" id="case-heading-tags"></div>
           </div>
+
+          <section class="prompt-box prompt-panel hidden" id="case-prompt-panel" aria-labelledby="case-prompt-label">
+            <div class="ph">
+              <span id="case-prompt-label">题目 Prompt</span>
+              <button type="button" class="ghost-btn prompt-copy" id="btn-copy-prompt">复制提示词</button>
+            </div>
+            <pre id="case-prompt"></pre>
+            <div class="prompt-editor-inline hidden" id="admin-prompt-editor">
+              <textarea id="case-prompt-edit" class="mono" aria-label="编辑题库提示词"></textarea>
+              <div class="admin-prompt-actions">
+                <button type="button" class="ghost-btn" id="btn-run-edited-prompt">运行修改</button>
+                <button type="button" class="ghost-btn" id="btn-save-prompt">保存</button>
+                <button type="button" class="primary-btn" id="btn-save-run-prompt">保存并运行</button>
+              </div>
+            </div>
+            <details class="rubric-disclosure hidden" id="rubric-details">
+              <summary>
+                <span>
+                  <strong>评分标准</strong>
+                  <small id="case-rubric-meta"></small>
+                </span>
+                <span class="disclosure-action" aria-hidden="true">查看</span>
+              </summary>
+              <div class="rubric" id="case-rubric"></div>
+            </details>
+          </section>
+
           <div class="snapshot-strip" id="snapshot-strip" aria-live="polite">
             <div class="snapshot-state">
               <span class="snapshot-dot" aria-hidden="true"></span>
@@ -91,34 +118,6 @@
         <div class="compare published-compare" id="compare" aria-live="polite"></div>
 
         <div class="stage-lower">
-          <details class="prompt-disclosure" id="prompt-details">
-            <summary>
-              <span>
-                <strong>完整 Prompt 与评分标准</strong>
-                <small>查看本轮模型收到的原始题目</small>
-              </span>
-              <span class="disclosure-action" aria-hidden="true">展开</span>
-            </summary>
-            <div class="prompt-disclosure-body">
-          <div class="prompt-box">
-            <div class="ph">
-              <span>Shared prompt</span>
-              <button type="button" class="ghost-btn" id="btn-copy-prompt" style="padding:4px 8px;font-size:11px">复制提示词</button>
-            </div>
-            <pre id="case-prompt"></pre>
-            <div class="prompt-editor-inline hidden" id="admin-prompt-editor">
-              <textarea id="case-prompt-edit" class="mono" aria-label="编辑题库提示词"></textarea>
-              <div class="admin-prompt-actions">
-                <button type="button" class="ghost-btn" id="btn-run-edited-prompt">运行修改</button>
-                <button type="button" class="ghost-btn" id="btn-save-prompt">保存</button>
-                <button type="button" class="primary-btn" id="btn-save-run-prompt">保存并运行</button>
-              </div>
-            </div>
-          </div>
-          <div class="rubric" id="case-rubric"></div>
-            </div>
-          </details>
-
           <section class="snapshot-history hidden" id="snapshot-history" aria-labelledby="snapshot-history-title">
             <div class="snapshot-history-head">
               <h3 id="snapshot-history-title">历史版本</h3>
