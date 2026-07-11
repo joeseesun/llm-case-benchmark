@@ -66,6 +66,7 @@
   const caseRunIdleWaiters = new Set();
   const testRunTokens = new Map();
   const testRunIdleWaiters = new Set();
+  let topbarResizeObserver = null;
 
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -340,6 +341,26 @@
 
   function applyTheme() {
     document.documentElement.setAttribute('data-theme', state.theme);
+  }
+
+  function syncTopbarHeight() {
+    const topbar = $('.topbar');
+    if (!topbar) return;
+    const height = Math.ceil(topbar.getBoundingClientRect().height);
+    document.documentElement.style.setProperty('--topbar-height', `${height}px`);
+  }
+
+  function observeTopbarHeight() {
+    const topbar = $('.topbar');
+    if (!topbar) return;
+    syncTopbarHeight();
+    if (typeof ResizeObserver === 'function') {
+      topbarResizeObserver?.disconnect();
+      topbarResizeObserver = new ResizeObserver(syncTopbarHeight);
+      topbarResizeObserver.observe(topbar);
+      return;
+    }
+    window.addEventListener('resize', syncTopbarHeight, { passive: true });
   }
 
   function activeCase() {
@@ -946,8 +967,11 @@
     [...state.testSelectedKeys].forEach((key) => {
       if (!liveKeys.has(key)) state.testSelectedKeys.delete(key);
     });
-    if (!state.testSelectionTouched && slots.length && !state.testSelectedKeys.size) {
-      slots.slice(0, 4).forEach((m) => state.testSelectedKeys.add(m.key));
+    if (!state.testSelectionTouched) {
+      const browserSlots = slots.filter((m) => m.keySource === 'browser');
+      const defaultSlots = browserSlots.length ? browserSlots : slots;
+      state.testSelectedKeys.clear();
+      defaultSlots.forEach((m) => state.testSelectedKeys.add(m.key));
     }
   }
 
@@ -1049,6 +1073,10 @@
           </button>`;
       })
       .join('');
+    requestAnimationFrame(() => {
+      if (!window.matchMedia('(min-width: 901px)').matches) return;
+      list.querySelector('.case-item.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
   }
 
   function renderSnapshotMeta() {
@@ -2847,7 +2875,7 @@
   async function loadGallery() {
     const grid = $('#gallery-grid');
     grid.setAttribute('aria-busy', 'true');
-    grid.innerHTML = '<div class="empty-state slim" style="grid-column:1/-1"><strong>正在加载贡献结果…</strong></div>';
+    grid.innerHTML = '<div class="empty-state slim" style="grid-column:1/-1"><strong>正在加载网友分享…</strong></div>';
     let data;
     try {
       const res = await fetch('/api/contributions');
@@ -2861,7 +2889,7 @@
     grid.removeAttribute('aria-busy');
     state.contributions = data.contributions || [];
     if (!state.contributions.length) {
-      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><strong>还没有贡献</strong>跑完一组后点「贡献本次结果」。</div>`;
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><strong>还没有网友分享</strong>跑完一组后点「分享本次结果」。</div>`;
       return;
     }
     grid.innerHTML = state.contributions
@@ -3129,10 +3157,10 @@
     if (!state.isAdmin || !id) return;
     const isContribution = kind === 'contribution';
     state.pendingDelete = { kind, id, label };
-    $('#delete-record-title').textContent = isContribution ? '删除这条贡献？' : '删除这条测试记录？';
+    $('#delete-record-title').textContent = isContribution ? '删除这条分享？' : '删除这条测试记录？';
     $('#delete-record-description').textContent = `将永久删除「${label || id}」及其中的全部模型结果。此操作无法恢复。`;
     const confirmButton = $('#btn-confirm-delete-record');
-    confirmButton.textContent = isContribution ? '删除贡献' : '删除记录';
+    confirmButton.textContent = isContribution ? '删除分享' : '删除记录';
     confirmButton.disabled = false;
     openModal('modal-delete-record', $('#btn-cancel-delete-record'));
   }
@@ -3166,7 +3194,7 @@
         closeModal('modal-detail');
         state.selectedContributionId = '';
         await loadGallery();
-        toast('贡献已删除');
+        toast('分享已删除');
       } else {
         await loadHistory();
         toast('测试记录已删除');
@@ -3210,7 +3238,7 @@
           outputType: caseOutputType(c) === 'html' ? 'html' : 'text',
           }));
     if (!results.length) {
-      toast('没有可贡献的成功结果');
+      toast('没有可分享的成功结果');
       return;
     }
     const scores = {};
@@ -3231,7 +3259,7 @@
         caseTitle: title,
         category: isTest ? (results.some((r) => r.outputType === 'html') ? 'frontend' : 'custom') : c.category,
         prompt,
-        author: $('#contrib-author').value.trim() || '匿名贡献者',
+        author: $('#contrib-author').value.trim() || '匿名网友',
         note: $('#contrib-note').value.trim(),
         results,
         scores,
@@ -3239,11 +3267,11 @@
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      toast(data.error || '贡献失败');
+      toast(data.error || '分享失败');
       return;
     }
     closeModal('modal-contribute');
-    toast('已贡献到网站');
+    toast('已发布到网友测试分享');
     if (state.view === 'gallery') loadGallery();
   }
 
@@ -3845,6 +3873,7 @@
   async function init() {
     loadSettings();
     applyTheme();
+    observeTopbarHeight();
     bind();
     try {
       await checkAdmin();

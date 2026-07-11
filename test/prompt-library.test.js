@@ -38,3 +38,16 @@ test('prompt library contains 36 complete, balanced, original-use cases', () => 
   assert.ok(library.some((item) => item.outputType === 'html'));
   assert.ok(library.some((item) => item.outputType === 'text'));
 });
+
+test('prompt library Chinese is unambiguous and free of translation-shaped wording', () => {
+  const library = loadLibrary();
+  const byId = new Map(library.map((item) => [item.id, item]));
+  assert.equal(byId.get('reasoning-coffee-cause').title, '换音乐让销量涨了 42% 吗');
+  assert.match(byId.get('instruction-table-total').prompt, /除表头和分隔线外，必须恰好有 4 行数据/);
+  assert.match(byId.get('code-csv-line').prompt, /闭合引号后只能是逗号或行尾/);
+  assert.match(byId.get('data-weighted-ranking').prompt, /模型 B[^；]*成本 75/);
+  assert.match(byId.get('data-calendar-ics').prompt, /SUMMARY 分别为“例会”和“发布复盘”/);
+  assert.match(byId.get('data-contact-dedupe').prompt, /按 email 升序排列/);
+  const prose = library.map((item) => `${item.title}\n${item.summary}\n${item.prompt}`).join('\n');
+  assert.doesNotMatch(prose, /有机数据|双端布局|standalone SVG|自定义胜利层|keys 固定/);
+});

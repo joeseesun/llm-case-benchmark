@@ -910,7 +910,7 @@ app.get('/preview/contribution/:id/:index', (req, res) => {
     res.status(404).type('text/plain').send('预览不存在\n');
     return;
   }
-  sendSharedPreview(res, row, row.label || row.model || contribution.caseTitle || '贡献结果预览');
+  sendSharedPreview(res, row, row.label || row.model || contribution.caseTitle || '网友分享结果预览');
 });
 
 app.get('/preview/history/:id/:index', (req, res) => {
@@ -1012,7 +1012,7 @@ app.post('/api/contributions', (req, res) => {
     caseTitle: sanitizeText(body.caseTitle, 120),
     category: sanitizeText(body.category, 40),
     prompt: sanitizeText(body.prompt, 8000),
-    author: sanitizeText(body.author || '匿名贡献者', 40),
+    author: sanitizeText(body.author || '匿名网友', 40),
     note: sanitizeText(body.note || '', 400),
     results: cleanResults,
     scores: body.scores && typeof body.scores === 'object' ? body.scores : {},
@@ -1635,7 +1635,7 @@ app.post('/api/admin/submissions/:id/review', requireAdmin, (req, res) => {
 
 app.delete('/api/admin/contributions/:id', requireAdmin, (req, res) => {
   if (!db.deleteContribution(req.params.id)) {
-    res.status(404).json({ error: '贡献记录不存在' });
+    res.status(404).json({ error: '分享记录不存在' });
     return;
   }
   res.json({ ok: true });

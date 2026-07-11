@@ -32,16 +32,17 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Independent result lifecycle：每个模型卡片独立进入运行、完成、失败与可预览状态；其他模型的流式更新不得重建已完成 iframe
 - Error recovery row：实时题库与自由对比的失败卡片原位显示“重新运行”；单卡重试不得中断仍在生成的兄弟模型，已发布快照保持不可变
 - Fullscreen artifact stage：打开后焦点直接进入 iframe，Space / WASD / 方向键由生成的 HTML 原生处理；关闭按钮保留为显式退出路径
-- Archive result viewer：测试记录与贡献详情沿用结果卡的预览语义；显式 HTML 默认展示沙箱预览，源码作为每张卡独立切换项，切换其他卡不得重建或重置当前 iframe
+- Archive result viewer：测试记录与网友分享详情沿用结果卡的预览语义；显式 HTML 默认展示沙箱预览，源码作为每张卡独立切换项，切换其他卡不得重建或重置当前 iframe
 - Isolated new-window preview：HTML 卡片的外链动作打开可交互预览而非源码；顶层只承载可信空壳，模型 HTML 始终位于无同源权限的 sandbox iframe 内
 - Admin publish action：管理员运行成功后显示“发布为题库结果”，二次确认后生成不可变快照
 - Run bar：“用本题复跑”为次级动作，管理员的发布动作只在存在成功结果时出现
 - Settings drawer for API keys (localStorage only)
-- Contribution gallery cards
+- Shared-test gallery cards
 - Theme toggle + affordance icons (reward / follow)
 
 ## 5. Layout
 - Desktop: `240px | 1fr` case rail + compare stage
+- Desktop case rail：固定在顶栏下方并始终占满剩余动态视口高度；题目列表只在 rail 内滚动，滚动到边界时不得把滚动继续传给右侧页面
 - Public default: 题目标题 → 完整 Prompt → 快照元数据 → 已发布模型结果；Prompt 与结果共同构成评测证据，均不得隐藏
 - Admin run mode: 可在同一题目下运行与发布，但不覆盖访客当前看到的精选快照，直到发布成功
 - Mobile: single column；题目横向浏览；模型结果单列堆叠，禁止页面横向滚动
@@ -66,6 +67,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Do: preserve every output byte in the result DOM; long output uses an internal reading scroll instead of `line-clamp`、省略号或“展开更多”
 - Do: keep a completed preview iframe stable so its focus, game state and internal event listeners survive sibling updates
 - Do: place the recovery action beside the failed result; an error message without a usable next step is incomplete
+- Do: keep parallel work areas in separate scroll contexts on desktop; the case rail and result page must retain their own position and scrollbar
 - Don't: let parent modal controls retain keyboard focus after an interactive HTML preview opens
 - Don't: open model HTML as a top-level Blob or write it directly into an about:blank window
 - Don't: rebuild the whole comparison grid for a single model's stream delta, timer tick or completion
@@ -76,6 +78,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 
 ## 8. Responsive
 - Break at 900px to single column
+- At 900px and below, release the fixed full-height rail and return to one primary page scroll context
 - Public result cards stack at 900px; model identity and snapshot metadata wrap without truncating the exact model ID
 - Result card height cap follows the dynamic viewport; mobile keeps a single bounded reading pane so scrolling code does not widen or drag the whole page
 - min-h 100dvh; no horizontal page scroll

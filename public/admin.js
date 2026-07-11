@@ -70,7 +70,7 @@
       ['公开可用模型', stats.publicModels],
       ['已发布结果题', stats.featuredCases || 0],
       ['结果快照', stats.publishedRuns || 0],
-      ['贡献结果', stats.contributions],
+      ['网友分享', stats.contributions],
     ]
       .map(
         ([l, n]) => `<div class="stat-card"><div class="n">${n}</div><div class="l">${escapeHtml(l)}</div></div>`

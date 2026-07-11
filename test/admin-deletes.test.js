@@ -149,7 +149,7 @@ test('administrators can delete contribution and run-history records', async (t)
     { method: 'DELETE', headers: { cookie } }
   );
   assert.equal(missingContribution.response.status, 404);
-  assert.equal(missingContribution.body.error, '贡献记录不存在');
+  assert.equal(missingContribution.body.error, '分享记录不存在');
 
   const missingHistory = await jsonFetch(
     `/api/admin/run-history/${encodeURIComponent(historyTarget.body.id)}`,
