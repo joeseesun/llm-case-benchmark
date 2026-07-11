@@ -8,7 +8,7 @@
 
 ![乔木 LLM 擂台题库与多模型输出界面](docs/screenshots/home.png)
 
-同一个提示词，并排运行多个大模型，直接比较创意写作与前端网页结果。支持自建题库、流式输出、HTML/SVG 预览、评分、历史记录和结果贡献。
+打开题目即可看到管理员确认发布的多模型实测结果，再按需查看 Prompt、切换历史版本或自行复跑。支持自建题库、流式输出、HTML/SVG 预览、评分、历史记录和结果贡献。
 
 **在线体验：** [benchmark.qiaomu.ai](https://benchmark.qiaomu.ai/) · **本地验证：** `npm test`
 
@@ -22,12 +22,14 @@
 
 | 能力 | 你得到什么 |
 | --- | --- |
+| 结果先行题库 | 访客无需先配置模型或等待生成，进入题目即可比较管理员发布的精选实测快照 |
+| 显式发布 | 管理员先运行形成候选，检查后再发布为不可变版本；普通运行不会自动覆盖精选结果 |
 | 多模型并行 | 一次选择多个服务商与子模型，完成后立即独立展示结果 |
 | 两类评测 | Markdown 文本与 HTML/SVG 前端任务均可运行和预览 |
 | 流式反馈 | 每张结果卡片独立显示生成进度，不必等全部模型结束 |
 | 题库工作流 | 搜索、筛选、提交题目；管理员可原位修改 Prompt 并保存运行 |
 | 结果管理 | 单模型重跑、复制、全屏、新窗口、导出、贡献与人工打分 |
-| 历史记录 | 标准题库每次运行自动留存，便于回看当时的模型与输出 |
+| 双轨历史 | 普通运行记录用于个人回看；管理员发布结果按 v1、v2…留档并可公开切换查看 |
 | 本地优先密钥 | 普通用户的 API Key 只保存在浏览器本地；站点 Key 仅由管理员配置 |
 
 ## 快速开始
@@ -68,6 +70,23 @@ npm start
 3. 在题库或对比测试页勾选本次要运行的服务商和子模型。
 
 普通用户配置保存在当前浏览器 `localStorage`，不会上传到站点。管理员可在后台配置站点公共模型，其 Key 加密存入本机 SQLite；公开 API 只返回脱敏后的模型信息。
+
+## 发布题库结果
+
+管理员登录 `/admin`，从「题库」进入某道题的「运行 / 发布」页面：选择固定模型完成一次运行，检查每列输出后，再点击「发布为题库结果」。确认发布会创建新的不可变版本并成为访客默认看到的精选结果；只运行、重跑或保存普通历史都不会替换它，旧版本也会继续保留。
+
+完整检查项、验证方式与安全边界见 [管理员题库结果发布手册](docs/publishing-results.md)。一次运行适合作为“单次实测快照”，不应直接包装成稳定排名；题目质量与后续改进建议见 [公开题库质量审计](docs/case-library-audit.md)。
+
+## 公开结果 API
+
+| 请求 | 用途 |
+| --- | --- |
+| `GET /api/cases?ready=only` | 只列出已有精选结果的公开题目，并附最新版本摘要 |
+| `GET /api/cases/:id/published-runs` | 获取该题的当前精选结果与历史版本摘要 |
+| `GET /api/cases/:id/published-runs/:version` | 获取指定不可变版本的完整结果 |
+| `POST /api/admin/cases/:id/published-runs` | 管理员显式发布当前已检查的候选运行；需要管理员会话 |
+
+公开结果快照不会保存 API Key 或 Base URL。发布接口会校验 Prompt 与当前题目一致，避免题目修改后误发旧候选。
 
 ## 数据与安全边界
 
@@ -135,7 +154,7 @@ curl http://127.0.0.1:3168/healthz
 
 # Qiaomu LLM Arena
 
-Run one prompt across multiple language models and compare writing or frontend results side by side. The app supports a reusable case library, streaming output, HTML/SVG previews, scoring, run history, exports, and community contributions.
+Open a case to compare an administrator-reviewed multi-model snapshot immediately, then inspect the prompt, switch immutable versions, or run the case yourself. The app also supports streaming output, HTML/SVG previews, scoring, run history, exports, and community contributions.
 
 **Live demo:** [benchmark.qiaomu.ai](https://benchmark.qiaomu.ai/) · **Verified with:** `npm test`
 
@@ -163,6 +182,7 @@ The app does not automatically load `.env`. Browser-side provider keys stay in l
 ## Main Features
 
 - Run selected providers and child models in parallel
+- Publish a reviewed run explicitly as the featured snapshot without overwriting older versions
 - Stream each result independently and rerun one model at a time
 - Render Markdown, HTML, SVG, and source views
 - Edit official prompts in place as an administrator

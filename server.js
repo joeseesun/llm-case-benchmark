@@ -15,6 +15,8 @@ const COOKIE_NAME = 'cb_admin';
 const IS_PROD = process.env.NODE_ENV === 'production';
 const FINAL_ONLY_RETRY_SYSTEM =
   '你上一轮只返回了推理过程，没有返回最终正文。现在必须跳过分析和推理，直接输出最终答案。不要解释、不要 Markdown 代码围栏、不要输出思考过程；如果任务要求 HTML/SVG，请只输出可直接预览的完整 HTML 或 SVG。';
+const HTML_OUTPUT_SYSTEM =
+  '只输出一个可直接放进 iframe 预览的完整 HTML 或 SVG。不要解释、不要 Markdown、不要代码围栏。若用户要求 SVG 动画，优先输出一个完整 <svg ...>...</svg>，包含必要的 <style>、<animate> 或 <animateTransform>，必须闭合所有标签。';
 
 db.openDb();
 
@@ -25,9 +27,13 @@ app.use(cookieParser());
 app.use(express.json({ limit: '2mb' }));
 
 function clientIp(req) {
+  const remote = req.socket.remoteAddress || 'unknown';
   const xf = req.headers['x-forwarded-for'];
-  if (typeof xf === 'string' && xf.length) return xf.split(',')[0].trim();
-  return req.socket.remoteAddress || 'unknown';
+  const fromLoopback = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+  if (fromLoopback && typeof xf === 'string' && xf.length) {
+    return xf.split(',').map((part) => part.trim()).filter(Boolean).at(-1) || remote;
+  }
+  return remote;
 }
 
 function ipHash(req) {
@@ -46,6 +52,11 @@ function requireAdmin(req, res, next) {
 function sanitizeText(s, max = 120000) {
   if (typeof s !== 'string') return '';
   return s.slice(0, max);
+}
+
+function effectiveCaseSystem(c) {
+  const system = c?.system || '';
+  return c?.outputType === 'html' ? [HTML_OUTPUT_SYSTEM, system].filter(Boolean).join('\n\n') : system;
 }
 
 /** Strip Bearer prefix, whitespace; reject URL-like keys (common paste mistake). */
@@ -625,6 +636,7 @@ app.get('/api/cases', (req, res) => {
     q: String(req.query.q || ''),
     category: String(req.query.category || 'all'),
     difficulty: String(req.query.difficulty || 'all'),
+    ready: req.query.ready === 'only' ? 'only' : 'all',
   });
   res.json({ cases });
 });
@@ -636,6 +648,37 @@ app.get('/api/cases/:id', (req, res) => {
     return;
   }
   res.json({ case: c });
+});
+
+app.get('/api/cases/:id/published-runs', (req, res) => {
+  const c = db.getCase(req.params.id);
+  if (!c || c.status !== 'published') {
+    res.status(404).json({ error: '题目不存在' });
+    return;
+  }
+  res.json({
+    featuredRun: db.getFeaturedPublishedRun(c.id),
+    history: db.listPublishedRuns({ caseId: c.id, limit: Number(req.query.limit) || 20 }),
+  });
+});
+
+app.get('/api/cases/:id/published-runs/:version', (req, res) => {
+  const c = db.getCase(req.params.id);
+  if (!c || c.status !== 'published') {
+    res.status(404).json({ error: '题目不存在' });
+    return;
+  }
+  const version = Number(req.params.version);
+  if (!Number.isInteger(version) || version < 1) {
+    res.status(400).json({ error: 'version 必须为正整数' });
+    return;
+  }
+  const publishedRun = db.getPublishedRunByVersion(c.id, version);
+  if (!publishedRun) {
+    res.status(404).json({ error: '公开结果版本不存在' });
+    return;
+  }
+  res.json({ publishedRun });
 });
 
 app.get('/api/site-models', (_req, res) => {
@@ -901,6 +944,81 @@ function sanitizeRunResults(results, limit = 8) {
   }));
 }
 
+function sanitizeUsage(usage) {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return {};
+  const out = {};
+  const fields = [
+    ['promptTokens', usage.promptTokens ?? usage.prompt_tokens ?? usage.inputTokens ?? usage.input_tokens],
+    [
+      'completionTokens',
+      usage.completionTokens ?? usage.completion_tokens ?? usage.outputTokens ?? usage.output_tokens,
+    ],
+    ['totalTokens', usage.totalTokens ?? usage.total_tokens],
+  ];
+  fields.forEach(([key, value]) => {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      out[key] = Math.round(value);
+    }
+  });
+  return out;
+}
+
+function sanitizeScores(scores) {
+  if (!scores || typeof scores !== 'object' || Array.isArray(scores)) return {};
+  const out = {};
+  Object.entries(scores)
+    .slice(0, 20)
+    .forEach(([rawKey, rawValue]) => {
+      const key = sanitizeText(rawKey, 80).trim();
+      if (key && typeof rawValue === 'number' && Number.isFinite(rawValue)) out[key] = rawValue;
+    });
+  return out;
+}
+
+function sanitizePublishedRunResults(results) {
+  return results.map((raw) => {
+    const result = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const content = sanitizeText(result.content, 40000);
+    const error = sanitizeText(result.error, 2000);
+    const explicitFailure = /^(error|failed|rejected)$/i.test(String(result.status || ''));
+    const status = content.trim() && !error.trim() && !explicitFailure ? 'ok' : 'error';
+    return {
+      status,
+      model: sanitizeText(result.model, 80),
+      label: sanitizeText(result.label || result.model, 80),
+      providerName: sanitizeText(result.providerName, 80),
+      profileName: sanitizeText(result.profileName, 80),
+      reportedModel: sanitizeText(result.reportedModel, 80),
+      content,
+      error,
+      latencyMs:
+        typeof result.latencyMs === 'number' && Number.isFinite(result.latencyMs)
+          ? Math.max(0, Math.round(result.latencyMs))
+          : null,
+      usage: sanitizeUsage(result.usage),
+      finishReason: sanitizeText(result.finishReason, 80),
+      outputType: result.outputType === 'html' ? 'html' : 'text',
+      scores: sanitizeScores(result.scores),
+      parameters: sanitizePublishedRunConfig(result.parameters ?? result.runConfig),
+    };
+  });
+}
+
+function sanitizePublishedRunConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return {};
+  const out = {};
+  const temperature = config.temperature;
+  const maxTokens = config.maxTokens ?? config.max_tokens;
+  const topP = config.topP ?? config.top_p;
+  const seed = config.seed;
+  if (Number.isFinite(temperature)) out.temperature = temperature;
+  if (Number.isFinite(maxTokens) && maxTokens > 0) out.maxTokens = Math.round(maxTokens);
+  if (typeof config.disableThinking === 'boolean') out.disableThinking = config.disableThinking;
+  if (Number.isFinite(topP)) out.topP = topP;
+  if (Number.isFinite(seed)) out.seed = Math.round(seed);
+  return out;
+}
+
 app.post('/api/run', async (req, res) => {
   const body = req.body || {};
   const { system, prompt, temperature = 0.7, maxTokens = 2048 } = body;
@@ -1063,6 +1181,61 @@ app.get('/api/admin/stats', requireAdmin, (_req, res) => {
 
 app.get('/api/admin/cases', requireAdmin, (_req, res) => {
   res.json({ cases: db.listAllCases() });
+});
+
+app.post('/api/admin/cases/:id/published-runs', requireAdmin, (req, res) => {
+  const c = db.getCase(req.params.id);
+  if (!c || c.status !== 'published') {
+    res.status(404).json({ error: '已发布题目不存在' });
+    return;
+  }
+
+  const body = req.body || {};
+  if (typeof body.prompt !== 'string' || !body.prompt.trim()) {
+    res.status(400).json({ error: 'prompt 必填' });
+    return;
+  }
+  const prompt = sanitizeText(body.prompt, 20000);
+  if (prompt !== c.prompt) {
+    res.status(409).json({ error: 'Prompt 已变化，请保存题目并重新运行后再发布' });
+    return;
+  }
+  if (typeof body.system !== 'string') {
+    res.status(400).json({ error: 'system 必填，必须是本次实际发送给模型的 System Prompt' });
+    return;
+  }
+  const expectedSystem = effectiveCaseSystem(c);
+  if (sanitizeText(body.system, 12000) !== expectedSystem) {
+    res.status(409).json({ error: '实际 System Prompt 与当前题目不一致，请重新运行后再发布' });
+    return;
+  }
+  if (!Array.isArray(body.results) || !body.results.length || body.results.length > 8) {
+    res.status(400).json({ error: 'results 必须包含 1–8 个模型结果' });
+    return;
+  }
+
+  const publishedOutputType = c.outputType === 'html' ? 'html' : 'text';
+  const results = sanitizePublishedRunResults(body.results).map((result) => ({
+    ...result,
+    outputType: publishedOutputType,
+  }));
+  if (results.some((result) => !result.model || (!result.content.trim() && !result.error.trim()))) {
+    res.status(400).json({ error: '每个结果都需要 model，并包含 content 或 error' });
+    return;
+  }
+  if (!results.some((result) => result.status === 'ok' && result.content.trim())) {
+    res.status(400).json({ error: '至少需要 1 个成功生成的结果才能发布' });
+    return;
+  }
+
+  const publishedRun = db.publishCaseRun({
+    caseId: c.id,
+    results,
+    runConfig: sanitizePublishedRunConfig(body.runConfig),
+    note: sanitizeText(body.note, 400),
+    systemPrompt: expectedSystem,
+  });
+  res.status(201).json({ ok: true, publishedRun });
 });
 
 app.post('/api/admin/cases', requireAdmin, (req, res) => {
