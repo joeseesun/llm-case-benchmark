@@ -26,7 +26,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 ## 4. Components
 - Left case rail / board filter chips：每题同时显示“已发布模型数 + 更新时间”
 - Published snapshot bar：精选结果版本、运行时间、成功/失败数、精确模型标识
-- Prompt disclosure：默认保留题目摘要与评分标准，完整 Prompt 按需展开
+- Prompt evidence panel：完整 Prompt 直接显示在题目标题下方，不折叠；评分标准作为次级信息独立披露
 - Model result columns (2–4) with header + body：公开页不依赖访客的本地模型配置
 - Admin publish action：管理员运行成功后显示“发布为题库结果”，二次确认后生成不可变快照
 - Run bar：“用本题复跑”为次级动作，管理员的发布动作只在存在成功结果时出现
@@ -36,7 +36,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 
 ## 5. Layout
 - Desktop: `240px | 1fr` case rail + compare stage
-- Public default: 题目标题/快照元数据 → 已发布模型结果 → Prompt/评分标准；结果必须进入首屏
+- Public default: 题目标题 → 完整 Prompt → 快照元数据 → 已发布模型结果；Prompt 与结果共同构成评测证据，均不得隐藏
 - Admin run mode: 可在同一题目下运行与发布，但不覆盖访客当前看到的精选快照，直到发布成功
 - Mobile: single column；题目横向浏览；模型结果单列堆叠，禁止页面横向滚动
 
@@ -48,6 +48,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 
 ## 7. Do's / Don'ts
 - Do: same prompt text shared across all model columns
+- Do: keep the full effective case Prompt visible above the compared outputs; do not hide essential comparison context in an accordion
 - Do: public case only treats an admin-confirmed immutable snapshot as the featured result
 - Do: preserve previous published versions and show exact run time/model identity
 - Do: keep the last published snapshot visible while an admin reruns or while refresh fails
