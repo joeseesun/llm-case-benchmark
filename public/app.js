@@ -57,7 +57,10 @@
   let runTicker = null;
   const modalReturnFocus = new Map();
   const renderQueued = { case: new Set(), test: new Set() };
+  const caseSlotRunTokens = new Map();
+  const caseRunIdleWaiters = new Set();
   const testRunTokens = new Map();
+  const testRunIdleWaiters = new Set();
 
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -471,9 +474,20 @@
     return state.testOutputType;
   }
 
+  function renderRerunButton(slotKey, source, running = false) {
+    const rerunAttr = source === 'test' ? 'data-test-rerun' : 'data-rerun';
+    if (source === 'published') return '';
+    const safeKey = escapeHtml(slotKey);
+    return `<button type="button" class="rerun-btn" ${rerunAttr}="${safeKey}" ${running ? 'disabled' : ''}>重新运行</button>`;
+  }
+
+  function renderErrorRerun(slotKey, source) {
+    const button = renderRerunButton(slotKey, source);
+    return button ? `<div class="col-tabs recovery-tabs">${button}</div>` : '';
+  }
+
   function renderTabs({ slotKey, source, artifact, mode, running }) {
     const viewAttr = source === 'test' ? 'data-test-view' : 'data-view';
-    const rerunAttr = source === 'test' ? 'data-test-rerun' : 'data-rerun';
     const safeKey = escapeHtml(slotKey);
     const left = artifact
       ? `<button type="button" ${viewAttr}="${safeKey}" data-mode="preview" aria-selected="${mode === 'preview'}">预览</button>
@@ -483,7 +497,7 @@
     return `
       <div class="col-tabs">
         <span class="tab-set">${left}</span>
-        ${source === 'published' ? '' : `<button type="button" class="rerun-btn" ${rerunAttr}="${safeKey}" ${running ? 'disabled' : ''}>重新运行</button>`}
+        ${renderRerunButton(slotKey, source, running)}
       </div>`;
   }
 
@@ -709,6 +723,9 @@
   }
 
   function beginCaseRun(caseId) {
+    caseSlotRunTokens.clear();
+    caseRunIdleWaiters.forEach((resolve) => resolve());
+    caseRunIdleWaiters.clear();
     const token = `${caseId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
     state.caseRunToken = token;
     state.running = true;
@@ -719,9 +736,38 @@
     return !!token && state.caseRunToken === token && state.activeId === caseId && state.resultOrigin === 'live';
   }
 
+  function beginCaseSlotRun(slotKey) {
+    const token = `${slotKey}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    caseSlotRunTokens.set(slotKey, token);
+    state.running = true;
+    return token;
+  }
+
+  function isCurrentCaseSlotRun(slotKey, slotToken, runToken, caseId) {
+    return isCurrentCaseRun(runToken, caseId) && caseSlotRunTokens.get(slotKey) === slotToken;
+  }
+
+  function finishCaseSlotRun(slotKey, slotToken) {
+    if (caseSlotRunTokens.get(slotKey) !== slotToken) return;
+    caseSlotRunTokens.delete(slotKey);
+    state.running = caseSlotRunTokens.size > 0;
+    if (!state.running) {
+      caseRunIdleWaiters.forEach((resolve) => resolve());
+      caseRunIdleWaiters.clear();
+    }
+  }
+
+  function waitForCaseSlotsIdle() {
+    if (!caseSlotRunTokens.size) return Promise.resolve();
+    return new Promise((resolve) => caseRunIdleWaiters.add(resolve));
+  }
+
   function cancelCaseRun() {
-    if (!state.caseRunToken && !state.running) return;
+    if (!state.caseRunToken && !state.running && !caseSlotRunTokens.size) return;
     state.caseRunToken = '';
+    caseSlotRunTokens.clear();
+    caseRunIdleWaiters.forEach((resolve) => resolve());
+    caseRunIdleWaiters.clear();
     state.running = false;
     const button = $('#btn-run');
     if (button) {
@@ -734,6 +780,7 @@
   function beginTestSlotRun(slotKey) {
     const token = `${slotKey}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
     testRunTokens.set(slotKey, token);
+    state.testRunning = true;
     return token;
   }
 
@@ -742,7 +789,18 @@
   }
 
   function finishTestSlotRun(slotKey, token) {
-    if (isCurrentTestSlotRun(slotKey, token)) testRunTokens.delete(slotKey);
+    if (!isCurrentTestSlotRun(slotKey, token)) return;
+    testRunTokens.delete(slotKey);
+    state.testRunning = testRunTokens.size > 0;
+    if (!state.testRunning) {
+      testRunIdleWaiters.forEach((resolve) => resolve());
+      testRunIdleWaiters.clear();
+    }
+  }
+
+  function waitForTestSlotsIdle() {
+    if (!testRunTokens.size) return Promise.resolve();
+    return new Promise((resolve) => testRunIdleWaiters.add(resolve));
   }
 
   function displaySlots() {
@@ -1114,7 +1172,8 @@
       stats = runningStats(r);
     } else if (r?.status === 'error') {
       body = renderErrorBody(r);
-      stats = r.latencyMs != null ? `${r.latencyMs} ms` : 'error';
+      stats = r.latencyMs != null ? `${r.latencyMs} ms · error` : 'error';
+      if (!published) tabs = renderErrorRerun(m.key, 'case');
     } else if (r?.status === 'ok') {
       const content = r.content || '';
       const resultOutputType = published ? outputType : (r.outputType === 'html' ? 'html' : outputType);
@@ -1161,7 +1220,8 @@
       stats = runningStats(r);
     } else if (r?.status === 'error') {
       body = renderErrorBody(r);
-      stats = r.latencyMs != null ? `${r.latencyMs}ms` : 'error';
+      stats = r.latencyMs != null ? `${r.latencyMs} ms · error` : 'error';
+      tabs = renderErrorRerun(m.key, 'test');
     } else if (r?.status === 'ok') {
       const surface = renderResultSurface({
         slotKey: m.key,
@@ -1577,6 +1637,7 @@
     const runContext = {
       caseId: c.id,
       prompt,
+      requestSystem: baseSystem,
       system: effectiveRunSystem(baseSystem, outputType),
       outputType,
       slots: slots.map((slot) => runSlotSnapshot(slot, requestContext)),
@@ -1593,6 +1654,7 @@
     slots.forEach((m) => {
       runResults[m.key] = { status: 'running', content: '', startedAt: Date.now() };
     });
+    const slotRunTokens = new Map(slots.map((m) => [m.key, beginCaseSlotRun(m.key)]));
     startRunTicker();
     updateResultActions();
     const btn = $('#btn-run');
@@ -1606,29 +1668,34 @@
 
     await Promise.all(
       slots.map(async (m) => {
+        const slotRunToken = slotRunTokens.get(m.key);
         const result = await requestSlotRun(m, {
           system: baseSystem,
           prompt,
           outputType: runContext.outputType,
           onUpdate: (patch) => {
-            if (!isCurrentCaseRun(runToken, c.id)) return;
+            if (!isCurrentCaseSlotRun(m.key, slotRunToken, runToken, c.id)) return;
             runResults[m.key] = { ...runResults[m.key], status: 'running', ...patch };
             state.results = runResults;
             queueResultRender('case', m.key);
           },
         });
-        if (!isCurrentCaseRun(runToken, c.id)) return;
+        if (!isCurrentCaseSlotRun(m.key, slotRunToken, runToken, c.id)) return;
         runResults[m.key] = result;
         state.results = runResults;
+        finishCaseSlotRun(m.key, slotRunToken);
         renderSnapshotMeta();
         queueResultRender('case', m.key);
         updateResultActions();
       })
     );
 
+    while (isCurrentCaseRun(runToken, c.id) && caseSlotRunTokens.size) {
+      await waitForCaseSlotsIdle();
+    }
     if (!isCurrentCaseRun(runToken, c.id)) return;
     state.caseRunToken = '';
-    state.running = false;
+    state.running = caseSlotRunTokens.size > 0;
     state.hasRunOnce = true;
     saveSettings();
     btn.disabled = false;
@@ -1658,10 +1725,6 @@
 
   async function rerunSlot(slotKey, source = 'case') {
     const isTest = source === 'test';
-    if (!isTest && state.running) {
-      toast('已有题目运行正在进行');
-      return;
-    }
     const slots = isTest ? configuredSlots({ selectedSiteOnly: false }) : runSlots();
     const slot = slots.find((m) => m.key === slotKey);
     if (!slot) {
@@ -1676,6 +1739,8 @@
     let outputType = 'text';
     let caseId = '';
     let caseRunToken = '';
+    let caseSlotRunToken = '';
+    let joinedCaseRun = false;
     let testRunToken = '';
     let caseResults = null;
     let effectiveSlot = null;
@@ -1694,6 +1759,10 @@
         outputType,
         startedAt: Date.now(),
       };
+      const testRunButton = $('#btn-test-run');
+      testRunButton.disabled = true;
+      testRunButton.classList.add('loading');
+      testRunButton.textContent = '运行中…';
       startRunTicker();
       $('#test-run-status').textContent = `正在重新运行 ${slot.label}…`;
       queueResultRender('test', slotKey);
@@ -1701,13 +1770,18 @@
       const c = activeCase();
       if (!c) return;
       caseId = c.id;
-      prompt = casePromptForRun(c);
+      const activeRunContext = isCurrentCaseRun(state.caseRunToken, caseId)
+        ? state.liveRunContext
+        : null;
+      prompt = activeRunContext?.prompt || casePromptForRun(c);
       if (!prompt) {
         toast('提示词不能为空');
         return;
       }
-      system = c.system || '';
-      outputType = caseOutputType(c);
+      system = activeRunContext?.requestSystem ?? c.system ?? '';
+      outputType = activeRunContext
+        ? (activeRunContext.outputType === 'html' ? 'html' : 'text')
+        : caseOutputType(c);
       const effectiveSystem = effectiveRunSystem(system, outputType);
       const previousContext = state.liveRunContext;
       const sameContext =
@@ -1715,8 +1789,9 @@
         previousContext.prompt === prompt &&
         previousContext.system === effectiveSystem &&
         previousContext.outputType === outputType;
-      caseResults = sameContext ? { ...state.results } : {};
+      caseResults = sameContext ? state.results : {};
       effectiveSlot = runSlotSnapshot(slot, { system, prompt, outputType });
+      joinedCaseRun = !!activeRunContext && sameContext;
       state.resultOrigin = 'live';
       state.liveSlots = sameContext
         ? [
@@ -1727,16 +1802,19 @@
       state.liveRunContext = {
         caseId,
         prompt,
+        requestSystem: system,
         system: effectiveSystem,
         outputType,
         slots: state.liveSlots,
       };
-      caseRunToken = beginCaseRun(caseId);
+      caseRunToken = joinedCaseRun ? state.caseRunToken : beginCaseRun(caseId);
+      caseSlotRunToken = beginCaseSlotRun(slotKey);
       state.results = caseResults;
       caseResults[slotKey] = { status: 'running', content: '', startedAt: Date.now() };
       const runButton = $('#btn-run');
       runButton.disabled = true;
       runButton.classList.add('loading');
+      runButton.textContent = '运行中…';
       startRunTicker();
       $('#run-status').textContent = `正在重新运行 ${slot.label}…`;
       renderSnapshotMeta();
@@ -1756,7 +1834,7 @@
           if (!isCurrentTestSlotRun(slotKey, testRunToken)) return;
           state.testResults[slotKey] = { ...state.testResults[slotKey], status: 'running', ...patch };
           queueResultRender('test', slotKey);
-        } else if (isCurrentCaseRun(caseRunToken, caseId)) {
+        } else if (isCurrentCaseSlotRun(slotKey, caseSlotRunToken, caseRunToken, caseId)) {
           caseResults[slotKey] = { ...caseResults[slotKey], status: 'running', ...patch };
           state.results = caseResults;
           queueResultRender('case', slotKey);
@@ -1775,21 +1853,32 @@
       $('#test-run-status').textContent = running
         ? `${ok} 成功 · ${running} 运行中${fail ? ` · ${fail} 失败` : ''}`
         : `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
+      if (!state.testRunning) {
+        const testRunButton = $('#btn-test-run');
+        testRunButton.disabled = false;
+        testRunButton.classList.remove('loading');
+        testRunButton.textContent = '运行提示词';
+      }
     } else {
-      if (!isCurrentCaseRun(caseRunToken, caseId)) return;
+      if (!isCurrentCaseSlotRun(slotKey, caseSlotRunToken, caseRunToken, caseId)) return;
       caseResults[slotKey] = result;
       state.results = caseResults;
-      state.caseRunToken = '';
-      state.running = false;
+      finishCaseSlotRun(slotKey, caseSlotRunToken);
+      if (!joinedCaseRun) state.caseRunToken = '';
       const runButton = $('#btn-run');
-      runButton.disabled = false;
-      runButton.classList.remove('loading');
+      if (!state.running && !joinedCaseRun) {
+        runButton.disabled = false;
+        runButton.classList.remove('loading');
+      }
       renderSnapshotMeta();
       queueResultRender('case', slotKey);
       const ok = Object.values(caseResults).filter((r) => r.status === 'ok').length;
       const fail = Object.values(caseResults).filter((r) => r.status === 'error').length;
-      $('#run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
-      if (result.status === 'ok') {
+      const running = Object.values(caseResults).filter((r) => r.status === 'running').length;
+      $('#run-status').textContent = running
+        ? `${ok} 成功 · ${running} 运行中${fail ? ` · ${fail} 失败` : ''}`
+        : `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
+      if (result.status === 'ok' && !joinedCaseRun) {
         history = await recordCaseRunHistory({
           caseId,
           prompt,
@@ -2446,6 +2535,8 @@
     }
     state.testRunning = true;
     testRunTokens.clear();
+    testRunIdleWaiters.forEach((resolve) => resolve());
+    testRunIdleWaiters.clear();
     state.testResults = {};
     slots.forEach((m) => {
       state.testResults[m.key] = {
@@ -2484,6 +2575,9 @@
       })
     );
 
+    while (testRunTokens.size) {
+      await waitForTestSlotsIdle();
+    }
     state.testRunning = false;
     btn.disabled = false;
     btn.classList.remove('loading');

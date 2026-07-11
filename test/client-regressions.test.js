@@ -104,8 +104,8 @@ test('published runs record effective request metadata and ignore stale case cal
   assert.match(runAll, /system: effectiveRunSystem\(baseSystem, outputType\)/);
   assert.match(runAll, /if \(!isCurrentCaseRun\(runToken, c\.id\)\) return/);
   assert.match(runAll, /results: runResults/);
-  assert.match(rerun, /caseRunToken = beginCaseRun\(caseId\)/);
-  assert.match(rerun, /if \(!isCurrentCaseRun\(caseRunToken, caseId\)\) return/);
+  assert.match(rerun, /caseRunToken = joinedCaseRun \? state\.caseRunToken : beginCaseRun\(caseId\)/);
+  assert.match(rerun, /isCurrentCaseSlotRun\(slotKey, caseSlotRunToken, caseRunToken, caseId\)/);
   assert.match(publish, /system: state\.liveRunContext\.system/);
 });
 
@@ -127,6 +127,64 @@ test('fullscreen HTML previews receive keyboard focus without weakening isolatio
   assert.match(fullscreen, /openModal\('modal-preview-fs',\s*[^)]+\)/);
   assert.match(modal, /function openModal\(id,\s*initialFocus\s*=\s*null\)/);
   assert.match(modal, /initialFocus\s*&&\s*overlay\.contains\(initialFocus\)[\s\S]*\?\s*initialFocus[\s\S]*:\s*overlay\.querySelector/);
+});
+
+test('failed live cards expose the correct per-source rerun action', () => {
+  const control = functionBody('renderRerunButton');
+  const caseCard = functionBody('renderCaseResultCard');
+  const testCard = functionBody('renderTestResultCard');
+  const caseError = /else if \(r\?\.status === 'error'\) \{([\s\S]*?)\n    \} else if \(r\?\.status === 'ok'\)/.exec(caseCard)?.[1] || '';
+  const testError = /else if \(r\?\.status === 'error'\) \{([\s\S]*?)\n    \} else if \(r\?\.status === 'ok'\)/.exec(testCard)?.[1] || '';
+
+  assert.match(control, /source === 'test' \? 'data-test-rerun' : 'data-rerun'/);
+  assert.match(control, /if \(source === 'published'\) return ''/);
+  assert.match(control, />重新运行<\/button>/);
+  assert.match(caseError, /if \(!published\) tabs = renderErrorRerun\(m\.key, 'case'\)/);
+  assert.match(testError, /tabs = renderErrorRerun\(m\.key, 'test'\)/);
+  assert.match(source, /closest\('\[data-rerun\]'\)[\s\S]{0,220}rerunSlot\(rerun\.dataset\.rerun, 'case'\)/);
+  assert.match(source, /closest\('\[data-test-rerun\]'\)[\s\S]{0,220}rerunSlot\(rerun\.dataset\.testRerun, 'test'\)/);
+});
+
+test('case card reruns join an active batch without invalidating sibling requests', () => {
+  const beginSlot = functionBody('beginCaseSlotRun');
+  const currentSlot = functionBody('isCurrentCaseSlotRun');
+  const finishSlot = functionBody('finishCaseSlotRun');
+  const runAll = functionBody('runAll');
+  const rerun = functionBody('rerunSlot');
+
+  assert.match(beginSlot, /caseSlotRunTokens\.set\(slotKey, token\)/);
+  assert.match(currentSlot, /isCurrentCaseRun\(runToken, caseId\)/);
+  assert.match(currentSlot, /caseSlotRunTokens\.get\(slotKey\) === slotToken/);
+  assert.match(finishSlot, /caseSlotRunTokens\.delete\(slotKey\)/);
+  assert.match(runAll, /slotRunTokens = new Map\(slots\.map/);
+  assert.match(runAll, /isCurrentCaseSlotRun\(m\.key, slotRunToken, runToken, c\.id\)/);
+  assert.match(runAll, /while \(isCurrentCaseRun\(runToken, c\.id\) && caseSlotRunTokens\.size\)/);
+  assert.match(runAll, /requestSystem: baseSystem/);
+  assert.doesNotMatch(rerun, /if \(!isTest && state\.running\)/);
+  assert.match(rerun, /const activeRunContext = isCurrentCaseRun\(state\.caseRunToken, caseId\)/);
+  assert.match(rerun, /prompt = activeRunContext\?\.prompt \|\| casePromptForRun\(c\)/);
+  assert.match(rerun, /system = activeRunContext\?\.requestSystem \?\? c\.system \?\? ''/);
+  assert.match(rerun, /caseResults = sameContext \? state\.results : \{\}/);
+  assert.match(rerun, /joinedCaseRun = !!activeRunContext && sameContext/);
+  assert.match(rerun, /caseRunToken = joinedCaseRun \? state\.caseRunToken : beginCaseRun\(caseId\)/);
+  assert.match(rerun, /caseSlotRunToken = beginCaseSlotRun\(slotKey\)/);
+  assert.match(rerun, /isCurrentCaseSlotRun\(slotKey, caseSlotRunToken, caseRunToken, caseId\)/);
+});
+
+test('free-compare batch waits for any per-card rerun before unlocking', () => {
+  const begin = functionBody('beginTestSlotRun');
+  const finish = functionBody('finishTestSlotRun');
+  const wait = functionBody('waitForTestSlotsIdle');
+  const runTest = functionBody('runPromptTest');
+  const rerun = functionBody('rerunSlot');
+
+  assert.match(begin, /state\.testRunning = true/);
+  assert.match(finish, /state\.testRunning = testRunTokens\.size > 0/);
+  assert.match(finish, /testRunIdleWaiters\.forEach\(\(resolve\) => resolve\(\)\)/);
+  assert.match(wait, /if \(!testRunTokens\.size\) return Promise\.resolve\(\)/);
+  assert.match(runTest, /while \(testRunTokens\.size\) \{[\s\S]*await waitForTestSlotsIdle\(\)/);
+  assert.match(rerun, /testRunButton\.disabled = true/);
+  assert.match(rerun, /if \(!state\.testRunning\) \{[\s\S]*testRunButton\.disabled = false/);
 });
 
 test('running result updates stay local to their source and slot', () => {
