@@ -5,6 +5,8 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
+const adminSource = fs.readFileSync(path.resolve(__dirname, '../public/admin.js'), 'utf8');
+const serverSource = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'utf8');
 
 function functionBody(name) {
   const start = source.indexOf(`function ${name}(`);
@@ -44,4 +46,76 @@ test('administrator edits the original prompt panel in place', () => {
   const promptBoxEnd = indexSource.indexOf('<div class="rubric"', promptBoxStart);
   assert.ok(promptBoxStart >= 0 && editorStart > promptBoxStart && editorStart < promptBoxEnd);
   assert.doesNotMatch(indexSource, />管理员编辑</);
+});
+
+test('public case library loads only cases with published results', () => {
+  const body = functionBody('loadCases');
+  assert.match(body, /ready: state\.isAdmin \? 'all' : 'only'/);
+  assert.match(body, /await loadPublishedRuns\(state\.activeId\)/);
+});
+
+test('published results load before relying on locally configured model slots', () => {
+  const body = functionBody('renderCompare');
+  assert.match(body, /const slots = displaySlots\(\)/);
+  assert.match(body, /state\.publishedRun/);
+  assert.match(indexSource, /id="snapshot-strip"/);
+  assert.ok(indexSource.indexOf('id="compare"') < indexSource.indexOf('id="prompt-details"'));
+});
+
+test('administrator explicitly publishes a completed run', () => {
+  const body = functionBody('publishLiveResults');
+  assert.match(body, /\/api\/admin\/cases\/\$\{encodeURIComponent\(c\.id\)\}\/published-runs/);
+  assert.match(indexSource, /id="modal-publish"/);
+  assert.match(adminSource, /运行 \/ 发布/);
+});
+
+test('text output is never upgraded into executable HTML by content sniffing', () => {
+  const infer = functionBody('inferOutputTypeFromText');
+  const renderable = functionBody('renderableArtifact');
+  const renderCompare = functionBody('renderCompare');
+  assert.match(infer, /if \(explicit === 'html' \|\| explicit === 'text'\) return explicit/);
+  assert.match(renderable, /if \(outputType !== 'html'\) return null/);
+  assert.match(renderCompare, /const resultOutputType = published \? outputType/);
+  assert.doesNotMatch(source, /r\.outputType === 'html' \|\| looksLikeHtml/);
+});
+
+test('published runs record effective request metadata and ignore stale case callbacks', () => {
+  const buildPayload = functionBody('buildRunPayload');
+  const runAll = functionBody('runAll');
+  const rerun = functionBody('rerunSlot');
+  const publish = functionBody('publishLiveResults');
+  assert.match(buildPayload, /effectiveRunSystem\(system, outputType\)/);
+  assert.match(runAll, /slots\.map\(\(slot\) => runSlotSnapshot\(slot, requestContext\)\)/);
+  assert.match(runAll, /system: effectiveRunSystem\(baseSystem, outputType\)/);
+  assert.match(runAll, /if \(!isCurrentCaseRun\(runToken, c\.id\)\) return/);
+  assert.match(runAll, /results: runResults/);
+  assert.match(rerun, /caseRunToken = beginCaseRun\(caseId\)/);
+  assert.match(rerun, /if \(!isCurrentCaseRun\(caseRunToken, caseId\)\) return/);
+  assert.match(publish, /system: state\.liveRunContext\.system/);
+});
+
+test('public HTML previews use a narrow network allowlist', () => {
+  const body = functionBody('applyPreviewCsp');
+  assert.match(body, /connect-src 'none'/);
+  assert.match(body, /script-src 'unsafe-inline' https:\/\/cdn\.jsdelivr\.net https:\/\/unpkg\.com/);
+  assert.doesNotMatch(body, /img-src[^;]*https:/);
+  assert.doesNotMatch(body, /script-src[^;]* https:;/);
+});
+
+test('login rate limits trust only loopback proxy chains and use the last forwarded address', () => {
+  const start = serverSource.indexOf('function clientIp(');
+  const end = serverSource.indexOf('\nfunction ipHash(', start);
+  const body = serverSource.slice(start, end);
+  assert.match(body, /fromLoopback/);
+  assert.match(body, /\.at\(-1\)/);
+  assert.doesNotMatch(body, /split\(','\)\[0\]/);
+});
+
+test('unreviewed community and run-history HTML is source-only', () => {
+  const contribution = functionBody('showContribution');
+  const history = functionBody('renderHistoryDetail');
+  assert.match(contribution, /社区贡献未经管理员审核/);
+  assert.match(history, /普通运行历史未经发布审核/);
+  assert.doesNotMatch(contribution, /<iframe/);
+  assert.doesNotMatch(history, /<iframe/);
 });

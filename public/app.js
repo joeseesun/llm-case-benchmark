@@ -24,6 +24,15 @@
     siteModels: [],
     selectedSiteIds: new Set(),
     results: {},
+    resultOrigin: 'published',
+    resultSlots: [],
+    liveSlots: [],
+    liveRunContext: null,
+    publishedRun: null,
+    publishedHistory: [],
+    publishedLoading: false,
+    publishedError: '',
+    publishedCaseId: '',
     scores: {},
     scoreOpen: new Set(),
     viewModes: {},
@@ -37,6 +46,7 @@
     view: 'cases',
     theme: 'light',
     running: false,
+    caseRunToken: '',
     contributions: [],
     history: [],
     isAdmin: false,
@@ -45,6 +55,7 @@
     hasRunOnce: false,
   };
   let runTicker = null;
+  const modalReturnFocus = new Map();
   const renderQueued = { case: false, test: false };
 
   const $ = (s, el = document) => el.querySelector(s);
@@ -310,8 +321,9 @@
     return cat || '其他';
   }
 
-  function inferOutputTypeFromText({ outputType = 'text', category = '', title = '', summary = '', prompt = '', tags = [] } = {}) {
-    if (outputType === 'html') return 'html';
+  function inferOutputTypeFromText({ outputType, output_type: outputTypeSnake, category = '', title = '', summary = '', prompt = '', tags = [] } = {}) {
+    const explicit = outputType ?? outputTypeSnake;
+    if (explicit === 'html' || explicit === 'text') return explicit;
     const blob = `${category} ${title} ${summary} ${prompt} ${Array.isArray(tags) ? tags.join(' ') : tags || ''}`;
     if (String(category).toLowerCase() === 'frontend') return 'html';
     if (/完整\s*html|输出\s*html|html\s*文件|网页|前端|three\.?js|webgl|canvas|svg|纯\s*css|css\s+art|loading\s*动画/i.test(blob)) {
@@ -403,12 +415,20 @@
     return escapeHtml(src).replace(/\n/g, '<br>');
   }
 
+  function applyPreviewCsp(markup) {
+    const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com;">`;
+    const html = String(markup || '');
+    if (/<head[\s>]/i.test(html)) return html.replace(/<head([^>]*)>/i, `<head$1>${csp}`);
+    if (/<html[\s>]/i.test(html)) return html.replace(/<html([^>]*)>/i, `<html$1><head>${csp}</head>`);
+    return `<!doctype html><html><head><meta charset="utf-8">${csp}</head><body>${html}</body></html>`;
+  }
+
   function wrapSvgForPreview(svg) {
-    return `<!doctype html><html><head><meta charset="utf-8"><style>
+    return applyPreviewCsp(`<!doctype html><html><head><meta charset="utf-8"><style>
       html,body{margin:0;min-height:100%;background:#fff;}
       body{display:grid;place-items:center;padding:12px;box-sizing:border-box;}
       svg{max-width:100%;height:auto;display:block;}
-    </style></head><body>${svg}</body></html>`;
+    </style></head><body>${svg}</body></html>`);
   }
 
   function firstRenderableFence(text) {
@@ -426,14 +446,15 @@
   }
 
   function renderableArtifact(text, outputType = 'text') {
+    if (outputType !== 'html') return null;
     const raw = decodeArtifactEntities(String(text || '').trim());
     const stripped = stripCodeFence(raw);
     const direct = stripped.trim();
     const fenced = firstRenderableFence(raw);
     const code = fenced ? fenced.code : direct;
     const html = extractHtmlMarkup(code) || extractHtmlMarkup(raw);
-    if (html && (outputType === 'html' || fenced)) {
-      return { source: html, preview: html, kind: 'html' };
+    if (html) {
+      return { source: html, preview: applyPreviewCsp(html), kind: 'html' };
     }
     const svg = extractSvgMarkup(code) || extractSvgMarkup(raw);
     if (svg) return { source: svg, preview: wrapSvgForPreview(svg), kind: 'svg' };
@@ -452,7 +473,7 @@
     return `
       <div class="col-tabs">
         <span class="tab-set">${left}</span>
-        <button type="button" class="rerun-btn" ${rerunAttr}="${safeKey}" ${running ? 'disabled' : ''}>重新运行</button>
+        ${source === 'published' ? '' : `<button type="button" class="rerun-btn" ${rerunAttr}="${safeKey}" ${running ? 'disabled' : ''}>重新运行</button>`}
       </div>`;
   }
 
@@ -526,13 +547,22 @@
 
   function openFullscreen(slotKey, source = 'case') {
     const isTest = source === 'test';
-    const slots = isTest ? configuredSlots({ selectedSiteOnly: false }) : runSlots();
+    const isPublished = source === 'published';
+    const slots = isTest
+      ? configuredSlots({ selectedSiteOnly: false })
+      : isPublished
+        ? displaySlots()
+        : (state.liveSlots.length ? state.liveSlots : runSlots());
     const m = slots.find((s) => s.key === slotKey);
     const r = isTest ? state.testResults[slotKey] : state.results[slotKey];
     const c = activeCase();
     if (!r?.content) return;
     const content = r.content;
-    const outputType = isTest ? state.testOutputType : caseOutputType(c);
+    const outputType = isTest
+      ? state.testOutputType
+      : isPublished
+        ? (r.outputType === 'html' ? 'html' : state.publishedRun?.outputType || 'text')
+        : caseOutputType(c);
     const artifact = renderableArtifact(content, outputType);
     $('#fs-title').textContent = m ? m.label : '预览';
     const body = $('#fs-body');
@@ -546,8 +576,21 @@
 
   function setUrlCase(id) {
     const u = new URL(location.href);
-    if (id) u.searchParams.set('case', id);
-    else u.searchParams.delete('case');
+    const previous = u.searchParams.get('case');
+    if (id) {
+      u.searchParams.set('case', id);
+      if (previous && previous !== id) u.searchParams.delete('run');
+    } else {
+      u.searchParams.delete('case');
+      u.searchParams.delete('run');
+    }
+    history.replaceState(null, '', u);
+  }
+
+  function setUrlPublishedVersion(version, isFeatured = false) {
+    const u = new URL(location.href);
+    if (isFeatured || !version) u.searchParams.delete('run');
+    else u.searchParams.set('run', String(version));
     history.replaceState(null, '', u);
   }
 
@@ -609,6 +652,111 @@
     return configuredSlots({ selectedSiteOnly: true });
   }
 
+  function slotSnapshot(slot) {
+    return {
+      key: slot.key,
+      kind: slot.kind,
+      siteModelId: slot.siteModelId || '',
+      providerName: slot.providerName || '',
+      profileName: slot.profileName || '',
+      keySource: slot.keySource || '',
+      label: slot.label || slot.model || '',
+      model: slot.model || '',
+      temperature: slot.temperature,
+      maxTokens: slot.maxTokens,
+    };
+  }
+
+  function effectiveRunSystem(system = '', outputType = 'text') {
+    return outputType === 'html'
+      ? [HTML_OUTPUT_SYSTEM, system].filter(Boolean).join('\n\n')
+      : system;
+  }
+
+  function runSlotSnapshot(slot, context) {
+    const payload = buildRunPayload(slot, context);
+    return {
+      ...slotSnapshot(slot),
+      temperature: payload.temperature,
+      maxTokens: payload.maxTokens,
+    };
+  }
+
+  function beginCaseRun(caseId) {
+    const token = `${caseId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    state.caseRunToken = token;
+    state.running = true;
+    return token;
+  }
+
+  function isCurrentCaseRun(token, caseId) {
+    return !!token && state.caseRunToken === token && state.activeId === caseId && state.resultOrigin === 'live';
+  }
+
+  function cancelCaseRun() {
+    if (!state.caseRunToken && !state.running) return;
+    state.caseRunToken = '';
+    state.running = false;
+    const button = $('#btn-run');
+    if (button) {
+      button.disabled = false;
+      button.classList.remove('loading');
+    }
+    updateResultActions();
+  }
+
+  function displaySlots() {
+    if (state.resultOrigin === 'published') return state.resultSlots;
+    return state.liveSlots.length ? state.liveSlots : runSlots().map(slotSnapshot);
+  }
+
+  function publishedResultKey(run, index) {
+    return `published:${run?.version || 'latest'}:${index}`;
+  }
+
+  function applyPublishedRun(run) {
+    cancelCaseRun();
+    state.publishedRun = run || null;
+    state.resultOrigin = 'published';
+    state.results = {};
+    state.resultSlots = [];
+    state.scores = {};
+    state.scoreOpen.clear();
+    (run?.results || []).forEach((result, index) => {
+      const key = publishedResultKey(run, index);
+      state.resultSlots.push({
+        key,
+        kind: 'published',
+        providerName: result.providerName || '',
+        profileName: result.profileName || '',
+        label: result.label || result.model || `模型 ${index + 1}`,
+        model: result.model || '',
+        keySource: 'published',
+      });
+      state.results[key] = {
+        ...result,
+        status: result.status === 'error' ? 'error' : 'ok',
+      };
+    });
+  }
+
+  function formatDateTime(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  }
+
+  function casePublishedSummary(c) {
+    return c?.publishedRunSummary || c?.publishedRun || c?.featuredRunSummary || null;
+  }
+
   function syncTestSelection(slots) {
     const liveKeys = new Set(slots.map((m) => m.key));
     [...state.testSelectedKeys].forEach((key) => {
@@ -631,7 +779,27 @@
 
   function updateResultActions() {
     const caseHasResults = hasSuccessfulResult(state.results);
-    $$('.result-action').forEach((el) => el.classList.toggle('hidden', !caseHasResults));
+    $('#btn-export')?.classList.toggle('hidden', !caseHasResults);
+    $('#btn-contribute')?.classList.toggle('hidden', !caseHasResults || state.resultOrigin !== 'live');
+    $('#btn-publish')?.classList.toggle(
+      'hidden',
+      !state.isAdmin || state.resultOrigin !== 'live' || !caseHasResults || state.running
+    );
+    $('#btn-view-published')?.classList.toggle(
+      'hidden',
+      !(
+        (state.resultOrigin === 'live' && state.publishedRun) ||
+        (state.resultOrigin === 'published' && state.publishedRun && !state.publishedRun.isFeatured)
+      )
+    );
+    const runButton = $('#btn-run');
+    if (runButton && !state.running) {
+      runButton.textContent = state.resultOrigin === 'live' && Object.keys(state.results).length
+        ? '重新运行本题'
+        : state.isAdmin && !state.publishedRun
+          ? '运行并生成结果'
+          : '用本题复跑';
+    }
     const testHasResults = hasSuccessfulResult(state.testResults);
     $$('.test-result-action').forEach((el) => el.classList.toggle('hidden', !testHasResults));
   }
@@ -650,6 +818,7 @@
     const prompt = $('#case-prompt');
     box.classList.toggle('hidden', !state.isAdmin || !state.promptEditing);
     prompt?.classList.toggle('hidden', state.isAdmin && state.promptEditing);
+    if (state.isAdmin && state.promptEditing) $('#prompt-details').open = true;
     if (!state.isAdmin) {
       $('#btn-copy-prompt').textContent = '复制提示词';
       return;
@@ -665,17 +834,27 @@
   function renderCaseList() {
     const list = $('#case-list');
     if (!state.cases.length) {
-      list.innerHTML =
-        '<div class="empty-state" style="padding:20px;border:0"><strong>暂无题目</strong></div>';
+      list.innerHTML = `<div class="empty-state rail-empty" style="padding:20px;border:0">
+        <strong>${state.isAdmin ? '没有匹配的题目' : '首批实测结果准备中'}</strong>
+        <span>${state.isAdmin ? '调整搜索或筛选条件。' : '题目会在管理员完成并发布结果后出现在这里。'}</span>
+      </div>`;
       return;
     }
     list.innerHTML = state.cases
       .map((c) => {
         const active = c.id === state.activeId ? 'active' : '';
+        const published = casePublishedSummary(c);
+        const successCount = published?.successCount ?? published?.successfulResultCount ?? 0;
+        const publishedAt = formatDateTime(published?.publishedAt);
         return `
           <button type="button" class="case-item ${active}" data-id="${escapeHtml(c.id)}">
             <strong>${escapeHtml(c.title)}</strong>
             <span>${escapeHtml(c.summary || '')}</span>
+            <span class="case-result-meta ${published ? 'ready' : 'pending'}">
+              ${published
+                ? `${escapeHtml(String(successCount))} 个模型 · ${escapeHtml(publishedAt || '已发布')}`
+                : '待发布结果'}
+            </span>
             <div class="meta">
               <span class="tag">${escapeHtml(categoryLabel(c.category))}</span>
               <span class="tag">${escapeHtml(c.difficulty || '')}</span>
@@ -689,25 +868,154 @@
       .join('');
   }
 
-  function renderStage() {
-    const c = activeCase();
-    if (!c) return;
-    $('#case-title').textContent = c.title;
-    $('#case-summary').textContent = c.summary || '';
-    $('#case-prompt').textContent = c.prompt || '';
-    renderAdminPromptEditor(c);
-    $('#case-rubric').innerHTML = (c.rubric || [])
-      .map((r) => `<i>${escapeHtml(r)}</i>`)
+  function renderSnapshotMeta() {
+    const strip = $('#snapshot-strip');
+    const title = $('#snapshot-title');
+    const facts = $('#snapshot-facts');
+    const runStatus = $('#run-status');
+    if (!strip || !title || !facts) return;
+
+    if (state.resultOrigin === 'live') {
+      const rows = Object.values(state.results);
+      const ok = rows.filter((r) => r?.status === 'ok').length;
+      const fail = rows.filter((r) => r?.status === 'error').length;
+      const running = rows.filter((r) => r?.status === 'running').length;
+      strip.dataset.state = 'live';
+      title.textContent = running ? '本次运行 · 尚未发布' : '本次运行已完成 · 尚未发布';
+      facts.innerHTML = [
+        `<span class="snapshot-fact">${ok} 成功${fail ? ` / ${fail} 失败` : ''}</span>`,
+        running ? `<span class="snapshot-fact">${running} 运行中</span>` : '',
+        `<span class="snapshot-fact">仅当前浏览器可见</span>`,
+      ].join('');
+      return;
+    }
+
+    if (state.publishedLoading) {
+      strip.dataset.state = 'loading';
+      title.textContent = '正在读取精选结果…';
+      facts.innerHTML = '';
+      if (runStatus) runStatus.textContent = '正在读取题库结果…';
+      return;
+    }
+
+    if (state.publishedError) {
+      strip.dataset.state = 'error';
+      title.textContent = '精选结果读取失败';
+      facts.innerHTML = '<span class="snapshot-fact">可重新加载</span>';
+      if (runStatus) runStatus.textContent = '结果暂时不可用，题目内容仍可查看。';
+      return;
+    }
+
+    const run = state.publishedRun;
+    if (!run) {
+      strip.dataset.state = 'empty';
+      title.textContent = '暂无已发布结果';
+      facts.innerHTML = state.isAdmin
+        ? '<span class="snapshot-fact">运行完成后可手动发布</span>'
+        : '<span class="snapshot-fact">尚未进入公开题库</span>';
+      if (runStatus) {
+        runStatus.textContent = state.isAdmin
+          ? '跑完并检查结果后，再手动发布为精选结果。'
+          : '这道题尚未发布实测结果。';
+      }
+      return;
+    }
+
+    strip.dataset.state = 'published';
+    title.textContent = `${run.isFeatured === false ? '历史结果' : '精选结果'} v${run.version}${run.note ? ` · ${run.note}` : ''}`;
+    const success = run.successfulResultCount ?? (run.results || []).filter((r) => r.status !== 'error').length;
+    const failed = Math.max(0, (run.resultCount ?? run.results?.length ?? 0) - success);
+    facts.innerHTML = [
+      `<span class="snapshot-fact">${escapeHtml(formatDateTime(run.publishedAt))}</span>`,
+      `<span class="snapshot-fact">${success} 成功${failed ? ` / ${failed} 失败` : ''}</span>`,
+      `<span class="snapshot-fact">${run.outputType === 'html' ? 'HTML / SVG' : '文本 / Markdown'}</span>`,
+    ].join('');
+    if (runStatus) runStatus.textContent = '管理员确认发布的固定快照，可查看历史版本或自行复跑。';
+  }
+
+  function renderSnapshotHistory() {
+    const section = $('#snapshot-history');
+    const list = $('#snapshot-version-list');
+    const history = state.publishedHistory || [];
+    section.classList.toggle('hidden', history.length < 2);
+    if (history.length < 2) {
+      list.innerHTML = '';
+      return;
+    }
+    $('#snapshot-history-meta').textContent = `${history.length} 个公开版本`;
+    list.innerHTML = history
+      .map((run) => {
+        const active = Number(run.version) === Number(state.publishedRun?.version);
+        return `<button type="button" class="snapshot-version" data-published-version="${escapeHtml(String(run.version))}" aria-current="${active}">
+          <b>v${escapeHtml(String(run.version))}</b>
+          <span>${escapeHtml(run.note || `${run.successfulResultCount ?? run.successCount ?? 0} 个成功结果`)}</span>
+          <time>${escapeHtml(formatDateTime(run.publishedAt))}</time>
+        </button>`;
+      })
       .join('');
+  }
+
+  function renderNoCaseStage() {
+    $('#case-title').textContent = state.isAdmin ? '没有匹配的题目' : '首批实测结果准备中';
+    $('#case-summary').textContent = state.isAdmin
+      ? '调整搜索或筛选条件后继续。'
+      : '管理员完成标准题目运行并确认发布后，结果会自动出现在这里。';
+    $('#case-heading-tags').innerHTML = '';
+    state.publishedRun = null;
+    state.publishedHistory = [];
+    state.publishedLoading = false;
+    state.publishedError = '';
+    applyPublishedRun(null);
+    renderSnapshotMeta();
+    renderSnapshotHistory();
     renderModelStrip();
     renderCompare();
     updateResultActions();
-    $('#first-guide').classList.toggle('hidden', state.hasRunOnce);
+  }
+
+  function renderStage() {
+    const c = activeCase();
+    if (!c) {
+      renderNoCaseStage();
+      return;
+    }
+    $('#case-title').textContent = c.title;
+    $('#case-summary').textContent = c.summary || '';
+    $('#case-heading-tags').innerHTML = [
+      categoryLabel(c.category),
+      c.difficulty || '',
+      ...(c.tags || []).slice(0, 2),
+    ]
+      .filter(Boolean)
+      .map((value) => `<span class="tag">${escapeHtml(value)}</span>`)
+      .join('');
+    const visiblePrompt = state.resultOrigin === 'published' && state.publishedRun
+      ? state.publishedRun.prompt || c.prompt
+      : c.prompt || '';
+    const visibleRubric = state.resultOrigin === 'published' && state.publishedRun
+      ? state.publishedRun.rubric || c.rubric || []
+      : c.rubric || [];
+    $('#case-prompt').textContent = visiblePrompt;
+    renderAdminPromptEditor(c);
+    $('#case-rubric').innerHTML = visibleRubric
+      .map((r) => `<i>${escapeHtml(r)}</i>`)
+      .join('');
+    renderSnapshotMeta();
+    renderSnapshotHistory();
+    renderModelStrip();
+    renderCompare();
+    updateResultActions();
   }
 
   function renderModelStrip() {
     const strip = $('#model-strip');
-    const slots = runSlots();
+    if (state.resultOrigin !== 'live') {
+      strip.classList.add('hidden');
+      strip.innerHTML = '';
+      return;
+    }
+    strip.classList.remove('hidden');
+    const slots = state.liveSlots.length ? state.liveSlots : runSlots();
     const parts = slots.map((m) => {
       const source = m.kind === 'site' ? '站点' : '本机';
       const chip = `
@@ -716,9 +1024,9 @@
         <span class="model-chip-model">${escapeHtml(m.model || '')}</span>
         <span class="model-chip-source">${source}</span>`;
       if (m.kind === 'site') {
-        return `<button type="button" class="model-chip selected" data-site="${escapeHtml(m.siteModelId)}" title="${escapeHtml(m.label)}">${chip}</button>`;
+        return `<button type="button" class="model-chip selected" data-site="${escapeHtml(m.siteModelId)}" aria-label="切换模型 ${escapeHtml(m.label)}">${chip}</button>`;
       }
-      return `<div class="model-chip selected" title="${escapeHtml(m.label)}">${chip}</div>`;
+      return `<div class="model-chip selected">${chip}</div>`;
     });
     if (!parts.length) {
       strip.innerHTML =
@@ -752,13 +1060,37 @@
   function renderCompare() {
     const c = activeCase();
     const box = $('#compare');
-    const slots = runSlots();
-    const outputType = caseOutputType(c);
+    const slots = displaySlots();
+    const published = state.resultOrigin === 'published';
+    const outputType = published ? (state.publishedRun?.outputType || caseOutputType(c)) : caseOutputType(c);
+    box.style.setProperty('--compare-cols', String(Math.min(3, Math.max(1, slots.length))));
+
+    if (published && state.publishedLoading) {
+      box.innerHTML = `<div class="result-skeleton" aria-label="正在读取精选结果"></div><div class="result-skeleton" aria-hidden="true"></div>`;
+      return;
+    }
+    if (published && state.publishedError) {
+      box.innerHTML = `<div class="published-empty"><div>
+        <strong>精选结果读取失败</strong>
+        <span>${escapeHtml(state.publishedError)}。已有题目内容仍可查看，你可以重新加载结果。</span>
+        <button type="button" class="ghost-btn" data-retry-published>重新加载</button>
+      </div></div>`;
+      return;
+    }
+    if (published && !state.publishedRun) {
+      box.innerHTML = `<div class="published-empty"><div>
+        <strong>这道题还没有公开结果</strong>
+        <span>${state.isAdmin ? '选择模型跑完本题，检查输出后再发布为题库结果。' : '管理员确认发布后，这里会直接展示多模型实测输出。'}</span>
+        ${state.isAdmin ? '<button type="button" class="ghost-btn" data-start-run>运行并生成结果</button>' : ''}
+      </div></div>`;
+      return;
+    }
     if (!slots.length) {
-      box.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+      box.innerHTML = `<div class="published-empty"><div>
         <strong>还没有可运行的模型</strong>
-        打开「模型设置」，用 DeepSeek / OpenRouter 等模板配置本机 Key（localStorage），或勾选站点模型。
-      </div>`;
+        <span>打开「模型设置」，配置本机 Key 或勾选管理员模型后继续。</span>
+        <button type="button" class="ghost-btn" data-open-settings>打开模型设置</button>
+      </div></div>`;
       return;
     }
     box.innerHTML = slots
@@ -773,41 +1105,100 @@
           stats = runningStats(r);
         } else if (r?.status === 'error') {
           body = renderErrorBody(r);
-          stats = r.latencyMs != null ? `${r.latencyMs}ms` : 'error';
+          stats = r.latencyMs != null ? `${r.latencyMs} ms` : 'error';
         } else if (r?.status === 'ok') {
           const content = r.content || '';
+          const resultOutputType = published ? outputType : (r.outputType === 'html' ? 'html' : outputType);
           const surface = renderResultSurface({
             slotKey: m.key,
-            source: 'case',
+            source: published ? 'published' : 'case',
             content,
-            outputType,
+            outputType: resultOutputType,
             mode,
             running: state.results[m.key]?.status === 'running',
           });
           tabs = surface.tabs;
           body = surface.body;
           const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
-          stats = `${r.latencyMs ?? '—'}ms${tok}`;
+          stats = r.latencyMs != null ? `${r.latencyMs} ms${tok}` : `—${tok}`;
         }
         const showFs = r?.status === 'ok';
         return `
-          <article class="col" data-slot="${escapeHtml(m.key)}">
+          <article class="col ${published ? 'published-col' : ''} ${outputType === 'html' ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
             <div class="col-head">
               <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
               <div class="stats">${escapeHtml(stats)}</div>
             </div>
             ${tabs}
             ${body}
-            ${r?.status === 'ok' && state.scoreOpen.has(m.key) ? scoreControls(m.key, c?.rubric) : ''}
+            ${!published && r?.status === 'ok' && state.scoreOpen.has(m.key) ? scoreControls(m.key, c?.rubric) : ''}
             ${r?.status === 'ok' ? `<div class="col-actions">
               ${iconAction({ attr: 'data-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
               ${showFs ? iconAction({ attr: 'data-fs', key: m.key, iconName: 'maximize', label: '全屏查看' }) : ''}
               ${iconAction({ attr: 'data-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
-              <button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>
+              ${published ? '' : `<button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>`}
             </div>` : ''}
           </article>`;
       })
       .join('');
+  }
+
+  async function loadPublishedRuns(caseId, { version = null } = {}) {
+    if (!caseId) return;
+    state.publishedCaseId = caseId;
+    state.publishedLoading = true;
+    state.publishedError = '';
+    state.publishedHistory = [];
+    applyPublishedRun(null);
+    renderStage();
+    try {
+      const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/published-runs?limit=20`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (state.activeId !== caseId || state.publishedCaseId !== caseId) return;
+      state.publishedHistory = data.history || [];
+      let selectedRun = data.featuredRun || null;
+      const requested = Number(version ?? new URL(location.href).searchParams.get('run'));
+      if (Number.isInteger(requested) && requested > 0 && requested !== Number(selectedRun?.version)) {
+        const versionRes = await fetch(`/api/cases/${encodeURIComponent(caseId)}/published-runs/${requested}`);
+        const versionData = await versionRes.json().catch(() => ({}));
+        if (!versionRes.ok) throw new Error(versionData.error || `HTTP ${versionRes.status}`);
+        selectedRun = versionData.publishedRun;
+      }
+      state.publishedLoading = false;
+      applyPublishedRun(selectedRun);
+      renderStage();
+    } catch (err) {
+      if (state.activeId !== caseId || state.publishedCaseId !== caseId) return;
+      state.publishedLoading = false;
+      state.publishedError = err?.message || '网络错误';
+      applyPublishedRun(null);
+      renderStage();
+    }
+  }
+
+  async function loadPublishedVersion(version) {
+    const c = activeCase();
+    if (!c || !Number.isInteger(Number(version))) return;
+    const numericVersion = Number(version);
+    state.publishedLoading = true;
+    state.publishedError = '';
+    renderStage();
+    try {
+      const res = await fetch(`/api/cases/${encodeURIComponent(c.id)}/published-runs/${numericVersion}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (state.activeId !== c.id) return;
+      state.publishedLoading = false;
+      applyPublishedRun(data.publishedRun);
+      setUrlPublishedVersion(numericVersion, data.publishedRun?.isFeatured);
+      renderStage();
+    } catch (err) {
+      state.publishedLoading = false;
+      state.publishedError = '';
+      renderStage();
+      toast(err?.message || '历史版本读取失败');
+    }
   }
 
   async function loadCases() {
@@ -815,9 +1206,11 @@
       category: state.filter,
       difficulty: state.difficulty,
       q: state.q,
+      ready: state.isAdmin ? 'all' : 'only',
     });
     const res = await fetch(`/api/cases?${params}`);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     state.cases = data.cases || [];
     const urlCase = new URL(location.href).searchParams.get('case');
     if (urlCase && state.cases.some((c) => c.id === urlCase)) {
@@ -827,7 +1220,8 @@
     }
     if (state.activeId) setUrlCase(state.activeId);
     renderCaseList();
-    renderStage();
+    if (state.activeId) await loadPublishedRuns(state.activeId);
+    else renderStage();
   }
 
   async function loadSiteModels() {
@@ -849,10 +1243,7 @@
   }
 
   function buildRunPayload(m, { system = '', prompt, outputType = 'text' }) {
-    const finalSystem =
-      outputType === 'html'
-        ? [HTML_OUTPUT_SYSTEM, system].filter(Boolean).join('\n\n')
-        : system;
+    const finalSystem = effectiveRunSystem(system, outputType);
     return m.kind === 'site'
       ? {
           siteModelId: m.siteModelId,
@@ -1066,18 +1457,27 @@
       toast('提示词不能为空');
       return;
     }
+    const outputType = caseOutputType(c);
+    const baseSystem = c.system || '';
+    const requestContext = { system: baseSystem, prompt, outputType };
     const runContext = {
       caseId: c.id,
       prompt,
-      outputType: caseOutputType(c),
-      slots: slots.map((slot) => ({ ...slot, apiKey: undefined })),
+      system: effectiveRunSystem(baseSystem, outputType),
+      outputType,
+      slots: slots.map((slot) => runSlotSnapshot(slot, requestContext)),
     };
-    state.running = true;
-    state.results = {};
+    const runToken = beginCaseRun(c.id);
+    const runResults = {};
+    state.resultOrigin = 'live';
+    state.liveSlots = runContext.slots;
+    state.liveRunContext = runContext;
+    setUrlPublishedVersion(null, true);
+    state.results = runResults;
     state.scores = {};
     state.scoreOpen.clear();
     slots.forEach((m) => {
-      state.results[m.key] = { status: 'running', content: '', startedAt: Date.now() };
+      runResults[m.key] = { status: 'running', content: '', startedAt: Date.now() };
     });
     startRunTicker();
     updateResultActions();
@@ -1086,34 +1486,43 @@
     btn.classList.add('loading');
     btn.textContent = '运行中…';
     $('#run-status').textContent = `并行请求 ${slots.length} 个模型…`;
+    renderSnapshotMeta();
+    renderModelStrip();
     renderCompare();
 
     await Promise.all(
       slots.map(async (m) => {
-        state.results[m.key] = await requestSlotRun(m, {
-          system: c.system || '',
+        const result = await requestSlotRun(m, {
+          system: baseSystem,
           prompt,
           outputType: runContext.outputType,
           onUpdate: (patch) => {
-            state.results[m.key] = { ...state.results[m.key], status: 'running', ...patch };
+            if (!isCurrentCaseRun(runToken, c.id)) return;
+            runResults[m.key] = { ...runResults[m.key], status: 'running', ...patch };
+            state.results = runResults;
             queueResultRender('case');
           },
         });
+        if (!isCurrentCaseRun(runToken, c.id)) return;
+        runResults[m.key] = result;
+        state.results = runResults;
+        renderSnapshotMeta();
         renderCompare();
         updateResultActions();
       })
     );
 
+    if (!isCurrentCaseRun(runToken, c.id)) return;
+    state.caseRunToken = '';
     state.running = false;
     state.hasRunOnce = true;
     saveSettings();
     btn.disabled = false;
     btn.classList.remove('loading');
-    btn.textContent = '运行提示词';
-    const ok = Object.values(state.results).filter((r) => r.status === 'ok').length;
-    const fail = Object.values(state.results).filter((r) => r.status === 'error').length;
+    const ok = Object.values(runResults).filter((r) => r.status === 'ok').length;
+    const fail = Object.values(runResults).filter((r) => r.status === 'error').length;
     $('#run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
-    $('#first-guide').classList.add('hidden');
+    renderSnapshotMeta();
     updateResultActions();
     const history = ok
       ? await recordCaseRunHistory({
@@ -1121,7 +1530,7 @@
           prompt: runContext.prompt,
           outputType: runContext.outputType,
           slots: runContext.slots,
-          results: state.results,
+          results: runResults,
         })
       : { ok: false, skipped: true };
     toast(
@@ -1135,6 +1544,10 @@
 
   async function rerunSlot(slotKey, source = 'case') {
     const isTest = source === 'test';
+    if (!isTest && state.running) {
+      toast('已有题目运行正在进行');
+      return;
+    }
     const slots = isTest ? configuredSlots({ selectedSiteOnly: false }) : runSlots();
     const slot = slots.find((m) => m.key === slotKey);
     if (!slot) {
@@ -1148,6 +1561,9 @@
     let system = '';
     let outputType = 'text';
     let caseId = '';
+    let caseRunToken = '';
+    let caseResults = null;
+    let effectiveSlot = null;
     if (isTest) {
       prompt = $('#test-prompt')?.value?.trim() || '';
       outputType = $('#test-output-type')?.value === 'html' ? 'html' : 'text';
@@ -1171,9 +1587,38 @@
       }
       system = c.system || '';
       outputType = caseOutputType(c);
-      state.results[slotKey] = { status: 'running', content: '', startedAt: Date.now() };
+      const effectiveSystem = effectiveRunSystem(system, outputType);
+      const previousContext = state.liveRunContext;
+      const sameContext =
+        previousContext?.caseId === caseId &&
+        previousContext.prompt === prompt &&
+        previousContext.system === effectiveSystem &&
+        previousContext.outputType === outputType;
+      caseResults = sameContext ? { ...state.results } : {};
+      effectiveSlot = runSlotSnapshot(slot, { system, prompt, outputType });
+      state.resultOrigin = 'live';
+      state.liveSlots = sameContext
+        ? [
+            ...state.liveSlots.filter((item) => item.key !== slotKey),
+            effectiveSlot,
+          ]
+        : [effectiveSlot];
+      state.liveRunContext = {
+        caseId,
+        prompt,
+        system: effectiveSystem,
+        outputType,
+        slots: state.liveSlots,
+      };
+      caseRunToken = beginCaseRun(caseId);
+      state.results = caseResults;
+      caseResults[slotKey] = { status: 'running', content: '', startedAt: Date.now() };
+      const runButton = $('#btn-run');
+      runButton.disabled = true;
+      runButton.classList.add('loading');
       startRunTicker();
       $('#run-status').textContent = `正在重新运行 ${slot.label}…`;
+      renderSnapshotMeta();
       renderCompare();
     }
 
@@ -1185,8 +1630,9 @@
         if (isTest) {
           state.testResults[slotKey] = { ...state.testResults[slotKey], status: 'running', ...patch };
           queueResultRender('test');
-        } else {
-          state.results[slotKey] = { ...state.results[slotKey], status: 'running', ...patch };
+        } else if (isCurrentCaseRun(caseRunToken, caseId)) {
+          caseResults[slotKey] = { ...caseResults[slotKey], status: 'running', ...patch };
+          state.results = caseResults;
           queueResultRender('case');
         }
       },
@@ -1199,17 +1645,25 @@
       const fail = Object.values(state.testResults).filter((r) => r.status === 'error').length;
       $('#test-run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
     } else {
-      state.results[slotKey] = result;
+      if (!isCurrentCaseRun(caseRunToken, caseId)) return;
+      caseResults[slotKey] = result;
+      state.results = caseResults;
+      state.caseRunToken = '';
+      state.running = false;
+      const runButton = $('#btn-run');
+      runButton.disabled = false;
+      runButton.classList.remove('loading');
+      renderSnapshotMeta();
       renderCompare();
-      const ok = Object.values(state.results).filter((r) => r.status === 'ok').length;
-      const fail = Object.values(state.results).filter((r) => r.status === 'error').length;
+      const ok = Object.values(caseResults).filter((r) => r.status === 'ok').length;
+      const fail = Object.values(caseResults).filter((r) => r.status === 'error').length;
       $('#run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
       if (result.status === 'ok') {
         history = await recordCaseRunHistory({
           caseId,
           prompt,
           outputType,
-          slots: [{ ...slot, apiKey: undefined }],
+          slots: [effectiveSlot],
           results: { [slotKey]: result },
         });
       }
@@ -1225,10 +1679,40 @@
   }
 
   function openModal(id) {
-    $(`#${id}`)?.classList.add('open');
+    const overlay = $(`#${id}`);
+    if (!overlay) return;
+    modalReturnFocus.set(id, document.activeElement);
+    overlay.classList.add('open');
+    requestAnimationFrame(() => {
+      const preferred = overlay.querySelector('[autofocus], input:not([type="hidden"]), textarea, select, button, a[href]');
+      preferred?.focus();
+    });
   }
   function closeModal(id) {
-    $(`#${id}`)?.classList.remove('open');
+    const overlay = $(`#${id}`);
+    if (!overlay) return;
+    overlay.classList.remove('open');
+    const trigger = modalReturnFocus.get(id);
+    modalReturnFocus.delete(id);
+    if (trigger && document.contains(trigger)) trigger.focus();
+  }
+
+  function trapModalFocus(event) {
+    if (event.key !== 'Tab') return;
+    const overlay = $$('.overlay.open').at(-1);
+    if (!overlay) return;
+    const focusable = $$('button:not([disabled]), a[href], input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])', overlay)
+      .filter((el) => el.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function renderSettingsEditor() {
@@ -1496,19 +1980,25 @@
   function exportResults() {
     const c = activeCase();
     if (!c) return;
-    const slots = runSlots();
+    const slots = displaySlots();
     if (!slots.some((m) => state.results[m.key]?.status === 'ok')) {
       toast('没有可导出的成功结果');
       return;
     }
+    const exportedPrompt = state.resultOrigin === 'published'
+      ? state.publishedRun?.prompt || c.prompt
+      : state.liveRunContext?.prompt || casePromptForRun(c);
     const lines = [
       `# ${c.title}`,
       '',
       `分类：${categoryLabel(c.category)}`,
+      ...(state.resultOrigin === 'published' && state.publishedRun
+        ? [`公开版本：v${state.publishedRun.version} · ${formatDateTime(state.publishedRun.publishedAt)}`, '']
+        : []),
       '',
       '## Prompt',
       '',
-      casePromptForRun(c),
+      exportedPrompt,
       '',
       '## Results',
       '',
@@ -1539,7 +2029,7 @@
     toast('已导出 Markdown');
   }
 
-  function successfulCaseRows({ results = state.results, slots = runSlots(), outputType = caseOutputType(activeCase()) } = {}) {
+  function successfulCaseRows({ results = state.results, slots = displaySlots(), outputType = caseOutputType(activeCase()) } = {}) {
     const slotMap = new Map(slots.map((m) => [m.key, m]));
     return Object.entries(results)
       .filter(([, r]) => r?.status === 'ok')
@@ -1554,8 +2044,7 @@
           reportedModel: r.reportedModel || '',
           content: r.content || '',
           latencyMs: r.latencyMs,
-          outputType:
-            outputType === 'html' || looksLikeHtml(r.content) ? 'html' : 'text',
+          outputType: outputType === 'html' ? 'html' : 'text',
         };
       });
   }
@@ -1581,13 +2070,113 @@
     }
   }
 
+  function publishedRowsFromLive() {
+    const outputType = state.liveRunContext?.outputType === 'html' ? 'html' : 'text';
+    const slotMap = new Map((state.liveSlots || []).map((slot) => [slot.key, slot]));
+    return Object.entries(state.results)
+      .filter(([, result]) => result?.status === 'ok' || result?.status === 'error')
+      .map(([key, result]) => {
+        const slot = slotMap.get(key) || {};
+        return {
+          status: result.status,
+          model: slot.model || result.model || key,
+          label: slot.label || result.label || result.model || key,
+          providerName: slot.providerName || '',
+          profileName: slot.profileName || '',
+          reportedModel: result.reportedModel || '',
+          content: result.content || '',
+          error: result.error || '',
+          latencyMs: result.latencyMs,
+          usage: result.usage || {},
+          outputType,
+          scores: state.scores[key] || {},
+          parameters: {
+            temperature: slot.temperature,
+            maxTokens: slot.maxTokens,
+          },
+        };
+      });
+  }
+
+  function openPublishDialog() {
+    const c = activeCase();
+    const rows = publishedRowsFromLive();
+    const ok = rows.filter((row) => row.status === 'ok' && row.content.trim()).length;
+    const failed = rows.filter((row) => row.status === 'error').length;
+    if (!state.isAdmin || !c || state.liveRunContext?.caseId !== c.id || !ok) {
+      toast('请先以管理员身份完成本题运行');
+      return;
+    }
+    $('#publish-summary').textContent = `「${c.title}」本次 ${ok} 个模型成功${failed ? `、${failed} 个失败` : ''}。确认后将成为访客默认看到的精选结果，旧版本继续保留。`;
+    $('#publish-checklist').innerHTML = [
+      `<span>Prompt 与当前题目一致</span>`,
+      `<span>${ok} 个成功结果将公开${failed ? `，并保留 ${failed} 个失败状态` : ''}</span>`,
+      `<span>API Key 与 Base URL 不会写入快照</span>`,
+    ].join('');
+    $('#publish-note').value = '';
+    openModal('modal-publish');
+  }
+
+  async function publishLiveResults() {
+    const c = activeCase();
+    const rows = publishedRowsFromLive();
+    if (!state.isAdmin || !c || state.liveRunContext?.caseId !== c.id) return;
+    const button = $('#btn-confirm-publish');
+    button.disabled = true;
+    button.textContent = '发布中…';
+    try {
+      const firstSlot = state.liveSlots[0] || {};
+      const res = await fetch(`/api/admin/cases/${encodeURIComponent(c.id)}/published-runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: state.liveRunContext.prompt,
+          system: state.liveRunContext.system,
+          results: rows,
+          runConfig: {
+            temperature: firstSlot.temperature,
+            maxTokens: firstSlot.maxTokens,
+          },
+          note: $('#publish-note').value.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      closeModal('modal-publish');
+      state.publishedRun = data.publishedRun;
+      state.publishedHistory = [
+        data.publishedRun,
+        ...state.publishedHistory.filter((run) => run.version !== data.publishedRun.version),
+      ];
+      applyPublishedRun(data.publishedRun);
+      setUrlPublishedVersion(null, true);
+      renderStage();
+      toast(`已发布精选结果 v${data.publishedRun.version}`);
+      await loadCases();
+    } catch (err) {
+      toast(err?.message || '发布失败');
+    } finally {
+      button.disabled = false;
+      button.textContent = '确认发布';
+    }
+  }
+
+  async function restorePublishedResults() {
+    const c = activeCase();
+    if (!c) return;
+    setUrlPublishedVersion(null, true);
+    await loadPublishedRuns(c.id);
+  }
+
   async function checkAdmin() {
     try {
       const res = await fetch('/api/admin/me');
       const data = await res.json().catch(() => ({}));
       state.isAdmin = !!data.authenticated;
+      $('#admin-entry')?.classList.toggle('hidden', !state.isAdmin);
     } catch {
       state.isAdmin = false;
+      $('#admin-entry')?.classList.add('hidden');
     }
   }
 
@@ -1814,7 +2403,7 @@
           label: slot?.label || r.label || r.model || key,
           content: r.content || '',
           latencyMs: r.latencyMs,
-          outputType: state.testOutputType === 'html' || looksLikeHtml(r.content) ? 'html' : 'text',
+          outputType: state.testOutputType === 'html' ? 'html' : 'text',
         };
       });
   }
@@ -1906,10 +2495,10 @@
     const box = $('#detail-compare');
     box.innerHTML = (c.results || [])
       .map((r) => {
-        const outputType = r.outputType === 'html' || looksLikeHtml(r.content) ? 'html' : 'text';
+        const outputType = r.outputType === 'html' ? 'html' : 'text';
         const artifact = renderableArtifact(r.content, outputType);
         const body = artifact
-          ? `<div class="col-body" style="padding:8px"><iframe sandbox="allow-scripts" srcdoc="${escapeHtml(artifact.preview)}"></iframe></div>`
+          ? `<div class="col-body"><p class="artifact-note">社区贡献未经管理员审核，默认只展示源码。</p><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
           : `<div class="col-body">${escapeHtml(r.content || '')}</div>`;
         return `
           <article class="col">
@@ -1939,10 +2528,10 @@
       <div class="compare history-compare">
         ${(item.results || [])
           .map((r) => {
-            const outputType = r.outputType === 'html' || looksLikeHtml(r.content) ? 'html' : 'text';
+            const outputType = r.outputType === 'html' ? 'html' : 'text';
             const artifact = renderableArtifact(r.content, outputType);
             const body = artifact
-              ? `<div class="col-body" style="padding:8px"><iframe sandbox="allow-scripts" srcdoc="${escapeHtml(artifact.preview)}"></iframe></div>`
+              ? `<div class="col-body"><p class="artifact-note">普通运行历史未经发布审核，默认只展示源码。</p><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
               : `<div class="col-body md" style="padding:16px;overflow:auto">${renderMarkdown(r.content || '')}</div>`;
             return `
               <article class="col">
@@ -1999,15 +2588,14 @@
     const testPrompt = $('#test-prompt')?.value?.trim() || '';
     const results = isTest
       ? successfulTestRows()
-      : runSlots()
+      : (state.liveSlots.length ? state.liveSlots : runSlots())
           .filter((m) => state.results[m.key]?.status === 'ok')
           .map((m) => ({
             model: state.results[m.key].model || m.model,
             label: m.label,
             content: state.results[m.key].content,
             latencyMs: state.results[m.key].latencyMs,
-          outputType:
-              caseOutputType(c) === 'html' || looksLikeHtml(state.results[m.key].content) ? 'html' : 'text',
+          outputType: caseOutputType(c) === 'html' ? 'html' : 'text',
           }));
     if (!results.length) {
       toast('没有可贡献的成功结果');
@@ -2015,11 +2603,11 @@
     }
     const scores = {};
     if (!isTest) {
-      runSlots().forEach((m) => {
+      (state.liveSlots.length ? state.liveSlots : runSlots()).forEach((m) => {
         if (state.scores[m.key]) scores[m.label] = state.scores[m.key];
       });
     }
-    const prompt = isTest ? testPrompt : casePromptForRun(c);
+    const prompt = isTest ? testPrompt : state.liveRunContext?.prompt || casePromptForRun(c);
     const title = isTest
       ? `对比测试：${prompt.slice(0, 28)}${prompt.length > 28 ? '…' : ''}`
       : c.title;
@@ -2059,6 +2647,7 @@
     $('#view-gallery').classList.toggle('hidden', view !== 'gallery');
     $('#view-submit').classList.toggle('hidden', view !== 'submit');
     $('#view-history').classList.toggle('hidden', view !== 'history');
+    $('#tab-cases').setAttribute('aria-selected', view === 'cases' ? 'true' : 'false');
     $('#tab-test').setAttribute('aria-selected', view === 'test' ? 'true' : 'false');
     $('#tab-gallery').setAttribute('aria-selected', view === 'gallery' ? 'true' : 'false');
     $('#tab-submit').setAttribute('aria-selected', view === 'submit' ? 'true' : 'false');
@@ -2072,6 +2661,7 @@
 
   function updateCardView(slotKey, source) {
     const isTest = source === 'test';
+    const isPublished = source === 'published';
     const box = $(isTest ? '#test-compare' : '#compare');
     const card = [...box.querySelectorAll('.col')].find((el) => el.dataset.slot === slotKey);
     const row = isTest ? state.testResults[slotKey] : state.results[slotKey];
@@ -2081,7 +2671,11 @@
       slotKey,
       source,
       content: row.content || '',
-      outputType: isTest ? state.testOutputType : caseOutputType(activeCase()),
+      outputType: isTest
+        ? state.testOutputType
+        : isPublished
+          ? (row.outputType === 'html' ? 'html' : state.publishedRun?.outputType || 'text')
+          : caseOutputType(activeCase()),
       mode,
     });
     card.querySelector('.col-tabs')?.remove();
@@ -2119,18 +2713,21 @@
       }, 200);
     });
 
-    $('#case-list').addEventListener('click', (e) => {
+    $('#case-list').addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-id]');
       if (!btn) return;
       state.activeId = btn.dataset.id;
       state.results = {};
+      state.resultSlots = [];
+      state.liveSlots = [];
+      state.liveRunContext = null;
       state.scores = {};
       state.scoreOpen.clear();
       state.promptEditing = false;
       state.caseDraftPrompt = '';
       setUrlCase(state.activeId);
       renderCaseList();
-      renderStage();
+      await loadPublishedRuns(state.activeId);
     });
 
     $('#model-strip').addEventListener('click', (e) => {
@@ -2195,6 +2792,9 @@
     });
 
     $('#btn-run').addEventListener('click', runAll);
+    $('#btn-publish').addEventListener('click', openPublishDialog);
+    $('#btn-confirm-publish').addEventListener('click', publishLiveResults);
+    $('#btn-view-published').addEventListener('click', restorePublishedResults);
     $('#btn-export').addEventListener('click', exportResults);
     $('#btn-copy-prompt').addEventListener('click', async () => {
       const c = activeCase();
@@ -2204,7 +2804,10 @@
         else beginPromptEdit();
         return;
       }
-      await navigator.clipboard.writeText(c.prompt);
+      const prompt = state.resultOrigin === 'published' && state.publishedRun
+        ? state.publishedRun.prompt || c.prompt
+        : c.prompt;
+      await navigator.clipboard.writeText(prompt);
       toast('提示词已复制');
     });
     $('#btn-run-edited-prompt')?.addEventListener('click', runAll);
@@ -2389,6 +2992,7 @@
     $('#btn-submit-contrib').addEventListener('click', submitContribution);
 
     $('#brand-home').addEventListener('click', (e) => { e.preventDefault(); setView('cases'); });
+    $('#tab-cases').addEventListener('click', (e) => { e.preventDefault(); setView('cases'); });
     ['test', 'gallery', 'history', 'submit'].forEach((view) => {
       $(`#tab-${view}`).addEventListener('click', (e) => { e.preventDefault(); setView(view); });
     });
@@ -2414,7 +3018,25 @@
       renderHistoryDetail(state.history.find((item) => item.id === btn.dataset.history));
     });
 
+    $('#snapshot-version-list').addEventListener('click', (e) => {
+      const button = e.target.closest('[data-published-version]');
+      if (button) loadPublishedVersion(Number(button.dataset.publishedVersion));
+    });
+
     $('#compare').addEventListener('click', async (e) => {
+      if (e.target.closest('[data-retry-published]')) {
+        await restorePublishedResults();
+        return;
+      }
+      if (e.target.closest('[data-start-run]')) {
+        await runAll();
+        return;
+      }
+      if (e.target.closest('[data-open-settings]')) {
+        renderSettingsEditor();
+        openModal('modal-settings');
+        return;
+      }
       const rerun = e.target.closest('[data-rerun]');
       if (rerun) {
         await rerunSlot(rerun.dataset.rerun, 'case');
@@ -2423,7 +3045,7 @@
       const viewBtn = e.target.closest('[data-view]');
       if (viewBtn) {
         state.viewModes[viewBtn.dataset.view] = viewBtn.dataset.mode;
-        updateCardView(viewBtn.dataset.view, 'case');
+        updateCardView(viewBtn.dataset.view, state.resultOrigin === 'published' ? 'published' : 'case');
         return;
       }
       const scoreToggle = e.target.closest('[data-score-toggle]');
@@ -2444,7 +3066,7 @@
       }
       const fs = e.target.closest('[data-fs]');
       if (fs) {
-        openFullscreen(fs.dataset.fs);
+        openFullscreen(fs.dataset.fs, state.resultOrigin === 'published' ? 'published' : 'case');
         return;
       }
       const copy = e.target.closest('[data-copy]');
@@ -2552,10 +3174,14 @@
     document.addEventListener('click', (e) => {
       const closer = e.target.closest('[data-close]');
       if (closer) closeModal(closer.dataset.close);
-      if (e.target.classList.contains('overlay')) e.target.classList.remove('open');
+      if (e.target.classList.contains('overlay')) closeModal(e.target.id);
     });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') $$('.overlay.open').forEach((o) => o.classList.remove('open'));
+      trapModalFocus(e);
+      if (e.key === 'Escape') {
+        const overlay = $$('.overlay.open').at(-1);
+        if (overlay) closeModal(overlay.id);
+      }
     });
   }
 

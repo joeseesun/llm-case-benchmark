@@ -54,7 +54,7 @@
 
   async function loadStats() {
     const { stats } = await api('/api/admin/stats');
-    $('#admin-stats').textContent = `公开题 ${stats.cases} · 待审 ${stats.pendingSubmissions} · 模型 ${stats.publicModels}/${stats.models}`;
+    $('#admin-stats').textContent = `公开题 ${stats.cases} · 已发布结果 ${stats.featuredCases || 0} · 待审 ${stats.pendingSubmissions} · 模型 ${stats.publicModels}/${stats.models}`;
     const badge = $('#pending-badge');
     if (stats.pendingSubmissions > 0) {
       badge.textContent = String(stats.pendingSubmissions);
@@ -68,6 +68,8 @@
       ['待审投稿', stats.pendingSubmissions],
       ['模型总数', stats.models],
       ['公开可用模型', stats.publicModels],
+      ['已发布结果题', stats.featuredCases || 0],
+      ['结果快照', stats.publishedRuns || 0],
       ['贡献结果', stats.contributions],
     ]
       .map(
@@ -134,6 +136,7 @@
         <td>${escapeHtml(c.status)}</td>
         <td>${escapeHtml(c.source)}</td>
         <td class="actions">
+          <a class="ghost-btn" href="/?case=${encodeURIComponent(c.id)}">运行 / 发布</a>
           <button type="button" class="ghost-btn" data-edit-case="${escapeHtml(c.id)}">编辑</button>
           <button type="button" class="ghost-btn" data-del-case="${escapeHtml(c.id)}">删除</button>
         </td>
