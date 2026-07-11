@@ -401,6 +401,14 @@ a:hover { text-decoration: underline; }
   gap: 8px;
   padding: 8px 10px 0;
 }
+.col-tabs.recovery-tabs { justify-content: flex-end; }
+.col-tabs.recovery-tabs .rerun-btn {
+  padding: 5px 10px;
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  color: var(--accent-strong);
+  font-weight: 600;
+}
 .tab-set { display: flex; gap: 4px; min-width: 0; }
 .col-tabs button {
   font-size: 11px; padding: 4px 8px; border-radius: 6px; color: var(--muted);

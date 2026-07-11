@@ -29,6 +29,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Prompt evidence panel：完整 Prompt 直接显示在题目标题下方，不折叠；评分标准作为次级信息独立披露
 - Model result columns (2–4) with header + body：公开页不依赖访客的本地模型配置
 - Independent result lifecycle：每个模型卡片独立进入运行、完成、失败与可预览状态；其他模型的流式更新不得重建已完成 iframe
+- Error recovery row：实时题库与自由对比的失败卡片原位显示“重新运行”；单卡重试不得中断仍在生成的兄弟模型，已发布快照保持不可变
 - Fullscreen artifact stage：打开后焦点直接进入 iframe，Space / WASD / 方向键由生成的 HTML 原生处理；关闭按钮保留为显式退出路径
 - Admin publish action：管理员运行成功后显示“发布为题库结果”，二次确认后生成不可变快照
 - Run bar：“用本题复跑”为次级动作，管理员的发布动作只在存在成功结果时出现
@@ -58,6 +59,7 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Do: sandboxed iframe for frontend HTML previews
 - Do: reveal each completed model immediately while the remaining models keep running
 - Do: keep a completed preview iframe stable so its focus, game state and internal event listeners survive sibling updates
+- Do: place the recovery action beside the failed result; an error message without a usable next step is incomplete
 - Don't: let parent modal controls retain keyboard focus after an interactive HTML preview opens
 - Don't: rebuild the whole comparison grid for a single model's stream delta, timer tick or completion
 - Don't: store API keys on server
