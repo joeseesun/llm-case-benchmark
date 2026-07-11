@@ -92,6 +92,23 @@
     return `<button type="button" class="card-icon-btn" ${attr}="${escapeHtml(key)}" aria-label="${label}" data-tooltip="${label}">${icon(iconName)}</button>`;
   }
 
+  function iconLinkAction({ href, iconName, label }) {
+    return `<a class="card-icon-btn" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" aria-label="${label}" data-tooltip="${label}">${icon(iconName)}</a>`;
+  }
+
+  function sharedPreviewPath(source, id, index, version = '') {
+    if (!id || !Number.isInteger(Number(index)) || Number(index) < 0) return '';
+    const safeId = encodeURIComponent(id);
+    const safeIndex = encodeURIComponent(String(index));
+    if (source === 'case' && Number.isInteger(Number(version)) && Number(version) > 0) {
+      return `/preview/case/${safeId}/${encodeURIComponent(String(version))}/${safeIndex}`;
+    }
+    if (source === 'contribution' || source === 'history') {
+      return `/preview/${source}/${safeId}/${safeIndex}`;
+    }
+    return '';
+  }
+
   function hasRunningRows(results) {
     return Object.values(results || {}).some((r) => r?.status === 'running');
   }
@@ -533,11 +550,11 @@
     return state.testOutputType;
   }
 
-  function renderRerunButton(slotKey, source, running = false) {
+  function renderRerunButton(slotKey, source, running = false, label = '重新运行') {
     const rerunAttr = source === 'test' ? 'data-test-rerun' : 'data-rerun';
     if (source === 'published') return '';
     const safeKey = escapeHtml(slotKey);
-    return `<button type="button" class="rerun-btn" ${rerunAttr}="${safeKey}" ${running ? 'disabled' : ''}>重新运行</button>`;
+    return `<button type="button" class="rerun-btn" ${rerunAttr}="${safeKey}" ${running ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
   }
 
   function renderErrorRerun(slotKey, source) {
@@ -628,31 +645,17 @@
     </div>`;
   }
 
-  function openFullscreen(slotKey, source = 'case') {
-    const isTest = source === 'test';
-    const isPublished = source === 'published';
-    const slots = isTest
-      ? configuredSlots({ selectedSiteOnly: false })
-      : isPublished
-        ? displaySlots()
-        : (state.liveSlots.length ? state.liveSlots : runSlots());
-    const m = slots.find((s) => s.key === slotKey);
-    const r = isTest ? state.testResults[slotKey] : state.results[slotKey];
-    const c = activeCase();
-    if (!r?.content) return;
-    const content = r.content;
-    const outputType = isTest
-      ? testResultOutputType(r)
-      : isPublished
-        ? (r.outputType === 'html' ? 'html' : state.publishedRun?.outputType || 'text')
-        : caseOutputType(c);
-    const artifact = renderableArtifact(content, outputType);
-    $('#fs-title').textContent = m ? m.label : '预览';
+  function presentFullscreen({ title = '预览', content = '', outputType = 'text', artifact = null, textPreview = 'markdown' } = {}) {
+    const resolvedArtifact = artifact || renderableArtifact(content, outputType);
+    $('#fs-title').textContent = title;
     const body = $('#fs-body');
     let initialFocus = null;
-    if (artifact) {
-      body.innerHTML = renderArtifactIframe(artifact, { title: '全屏 HTML 预览', focusable: true });
+    if (resolvedArtifact) {
+      body.innerHTML = renderArtifactIframe(resolvedArtifact, { title: '全屏 HTML 预览', focusable: true });
       initialFocus = body.querySelector('iframe');
+    } else if (textPreview === 'plain') {
+      body.innerHTML = `<div class="col-body" tabindex="0" style="padding:20px;overflow:auto;height:100%;background:var(--surface);color:var(--text);white-space:pre-wrap">${escapeHtml(content)}</div>`;
+      initialFocus = body.firstElementChild;
     } else {
       body.innerHTML = `<div class="col-body md" tabindex="0" style="padding:20px;overflow:auto;height:100%;background:var(--surface);color:var(--text)">${renderMarkdown(content)}</div>`;
       initialFocus = body.firstElementChild;
@@ -671,6 +674,30 @@
         }
       }, { once: true });
     }
+  }
+
+  function openFullscreen(slotKey, source = 'case') {
+    const isTest = source === 'test';
+    const isPublished = source === 'published';
+    const slots = isTest
+      ? configuredSlots({ selectedSiteOnly: false })
+      : isPublished
+        ? displaySlots()
+        : (state.liveSlots.length ? state.liveSlots : runSlots());
+    const m = slots.find((s) => s.key === slotKey);
+    const r = isTest ? state.testResults[slotKey] : state.results[slotKey];
+    const c = activeCase();
+    if (!r?.content) return;
+    const outputType = isTest
+      ? testResultOutputType(r)
+      : isPublished
+        ? (r.outputType === 'html' ? 'html' : state.publishedRun?.outputType || 'text')
+        : caseOutputType(c);
+    presentFullscreen({
+      title: m ? m.label : '预览',
+      content: r.content,
+      outputType,
+    });
   }
 
   function setUrlCase(id) {
@@ -1252,6 +1279,10 @@
       stats = r.latencyMs != null ? `${r.latencyMs} ms${tok}` : `—${tok}`;
     }
     const opensArtifactPreview = r?.status === 'ok' && !!renderableArtifact(r.content, newWindowOutputType);
+    const publishedIndex = published ? state.resultSlots.findIndex((slot) => slot.key === m.key) : -1;
+    const previewUrl = published
+      ? sharedPreviewPath('case', c?.id, publishedIndex, state.publishedRun?.version)
+      : '';
     return `
       <article class="col ${published ? 'published-col' : ''} ${opensArtifactPreview ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
         <div class="col-head">
@@ -1264,7 +1295,9 @@
         ${r?.status === 'ok' ? `<div class="col-actions">
           ${iconAction({ attr: 'data-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
           ${iconAction({ attr: 'data-fs', key: m.key, iconName: 'maximize', label: '全屏查看' })}
-          ${iconAction({ attr: 'data-open-result', key: m.key, iconName: 'external', label: opensArtifactPreview ? '新窗口打开预览' : '新窗口打开原文' })}
+          ${previewUrl
+            ? iconLinkAction({ href: previewUrl, iconName: 'external', label: opensArtifactPreview ? '新窗口打开可分享预览' : '新窗口打开可分享原文' })
+            : iconAction({ attr: 'data-open-result', key: m.key, iconName: 'external', label: opensArtifactPreview ? '新窗口打开预览' : '新窗口打开原文' })}
           ${published ? '' : `<button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>`}
         </div>` : ''}
       </article>`;
@@ -1274,12 +1307,13 @@
     const r = state.testResults[m.key];
     const outputType = testResultOutputType(r);
     const mode = state.testViewModes[m.key] || 'md';
-    let body = '<div class="col-body empty">等待运行…</div>';
+    let body = '<div class="col-body empty">尚未运行</div>';
     let stats = '—';
-    let tabs = '';
+    let tabs = `<div class="col-tabs recovery-tabs">${renderRerunButton(m.key, 'test', false, '运行此模型')}</div>`;
     if (r?.status === 'running') {
       body = renderRunningBody(r, outputType);
       stats = runningStats(r);
+      tabs = '';
     } else if (r?.status === 'error') {
       body = renderErrorBody(r);
       stats = r.latencyMs != null ? `${r.latencyMs} ms · error` : 'error';
@@ -1806,6 +1840,7 @@
     }
     const current = isTest ? state.testResults[slotKey] : state.results[slotKey];
     if (current?.status === 'running') return;
+    const isFirstTestRun = isTest && !current;
 
     let prompt = '';
     let system = '';
@@ -1837,7 +1872,7 @@
       testRunButton.classList.add('loading');
       testRunButton.textContent = '运行中…';
       startRunTicker();
-      $('#test-run-status').textContent = `正在重新运行 ${slot.label}…`;
+      $('#test-run-status').textContent = `${isFirstTestRun ? '正在运行' : '正在重新运行'} ${slot.label}…`;
       queueResultRender('test', slotKey);
     } else {
       const c = activeCase();
@@ -1966,9 +2001,24 @@
       result.status === 'ok' && !history.ok && !history.skipped
         ? `${slot.label} 已生成，但历史记录保存失败：${history.error}`
         : result.status === 'ok'
-          ? `${slot.label} 已重新生成`
-          : `${slot.label} 重新运行失败`
+          ? `${slot.label} ${isFirstTestRun ? '已生成' : '已重新生成'}`
+          : `${slot.label} ${isFirstTestRun ? '运行失败' : '重新运行失败'}`
     );
+  }
+
+  function syncModalStack() {
+    const openOverlays = $$('.overlay.open');
+    const topOverlay = openOverlays.at(-1) || null;
+    [...document.body.children].forEach((element) => {
+      if (element.tagName === 'SCRIPT') return;
+      if (topOverlay && element !== topOverlay) {
+        element.setAttribute('inert', '');
+        element.dataset.modalInert = 'true';
+      } else if (element.dataset.modalInert === 'true') {
+        element.removeAttribute('inert');
+        delete element.dataset.modalInert;
+      }
+    });
   }
 
   function openModal(id, initialFocus = null) {
@@ -1976,6 +2026,7 @@
     if (!overlay) return;
     modalReturnFocus.set(id, document.activeElement);
     overlay.classList.add('open');
+    syncModalStack();
     requestAnimationFrame(() => {
       const preferred = initialFocus && overlay.contains(initialFocus)
         ? initialFocus
@@ -1987,6 +2038,8 @@
     const overlay = $(`#${id}`);
     if (!overlay) return;
     overlay.classList.remove('open');
+    overlay.removeAttribute('inert');
+    syncModalStack();
     if (id === 'modal-delete-record') state.pendingDelete = null;
     const trigger = modalReturnFocus.get(id);
     modalReturnFocus.delete(id);
@@ -2845,16 +2898,24 @@
       .join('');
   }
 
-  function renderArchivedResultSurface({ archiveKey, content, outputType, previewTitle, textPreview = 'markdown' }) {
+  function renderArchivedActions({ archiveKey, artifact, previewUrl = '' }) {
+    const openLabel = artifact ? '新窗口打开可分享预览' : '新窗口打开可分享原文';
+    return `<div class="col-actions archive-actions">
+      ${iconAction({ attr: 'data-archive-fs', key: archiveKey, iconName: 'maximize', label: '全屏查看' })}
+      ${previewUrl
+        ? iconLinkAction({ href: previewUrl, iconName: 'external', label: openLabel })
+        : iconAction({ attr: 'data-archive-open-result', key: archiveKey, iconName: 'external', label: artifact ? '新窗口打开预览' : '新窗口打开原文' })}
+    </div>`;
+  }
+
+  function renderArchivedResultSurface({ archiveKey, content, outputType, previewTitle, textPreview = 'markdown', previewUrl = '' }) {
     const artifact = renderableArtifact(content, outputType);
     if (!artifact && textPreview === 'plain') {
       return {
         artifact: null,
         tabs: '',
         body: `<div class="col-body" data-archive-panel="raw">${escapeHtml(content)}</div>`,
-        actions: `<div class="col-actions archive-actions">
-          ${iconAction({ attr: 'data-archive-open-result', key: archiveKey, iconName: 'external', label: '新窗口打开原文' })}
-        </div>`,
+        actions: renderArchivedActions({ archiveKey, artifact: null, previewUrl }),
       };
     }
     const previewMode = artifact ? 'preview' : 'md';
@@ -2880,13 +2941,11 @@
         </span>
       </div>`,
       body: `${previewBody}${sourceBody}`,
-      actions: `<div class="col-actions archive-actions">
-        ${iconAction({ attr: 'data-archive-open-result', key: archiveKey, iconName: 'external', label: artifact ? '新窗口打开预览' : '新窗口打开原文' })}
-      </div>`,
+      actions: renderArchivedActions({ archiveKey, artifact, previewUrl }),
     };
   }
 
-  function renderArchivedResultCard(row, archiveKey, { textPreview = 'markdown' } = {}) {
+  function renderArchivedResultCard(row, archiveKey, { textPreview = 'markdown', previewUrl = '' } = {}) {
     const outputType = row?.outputType === 'html' ? 'html' : 'text';
     const title = row?.label || row?.model || '模型输出';
     const surface = renderArchivedResultSurface({
@@ -2895,9 +2954,10 @@
       outputType,
       previewTitle: title,
       textPreview,
+      previewUrl,
     });
     return `
-      <article class="col ${surface.artifact ? 'artifact-col' : 'text-col'}" data-archive-card="${escapeHtml(archiveKey)}">
+      <article class="col ${surface.artifact ? 'artifact-col' : 'text-col'}" data-archive-card="${escapeHtml(archiveKey)}" data-archive-text-preview="${escapeHtml(textPreview)}">
         <div class="col-head">
           <h3>${escapeHtml(title)}</h3>
           <div class="stats">${row?.latencyMs != null ? `${escapeHtml(row.latencyMs)}ms` : '—'}</div>
@@ -2906,6 +2966,29 @@
         ${surface.body}
         ${surface.actions}
       </article>`;
+  }
+
+  function openArchivedFullscreen(card) {
+    if (!card) return;
+    const title = card.querySelector('.col-head h3')?.textContent?.trim() || '模型输出预览';
+    const iframe = card.querySelector('[data-archive-panel="preview"] iframe');
+    const source = card.querySelector('[data-archive-panel="source"]')?.textContent || '';
+    if (iframe?.srcdoc) {
+      presentFullscreen({
+        title,
+        content: source,
+        outputType: 'html',
+        artifact: { source, preview: iframe.srcdoc, kind: 'html' },
+      });
+      return;
+    }
+    const raw = card.querySelector('[data-archive-panel="raw"]')?.textContent || '';
+    presentFullscreen({
+      title,
+      content: raw,
+      outputType: 'text',
+      textPreview: card.dataset.archiveTextPreview === 'plain' ? 'plain' : 'markdown',
+    });
   }
 
   function handleArchivedResultClick(event) {
@@ -2922,6 +3005,12 @@
       card.querySelectorAll('[data-archive-panel]').forEach((panel) => {
         panel.hidden = panel.dataset.archivePanel !== mode;
       });
+      return;
+    }
+
+    const fullscreenButton = event.target.closest('[data-archive-fs]');
+    if (fullscreenButton) {
+      openArchivedFullscreen(fullscreenButton.closest('[data-archive-card]'));
       return;
     }
 
@@ -2966,7 +3055,10 @@
     const box = $('#detail-compare');
     box.style.setProperty('--compare-cols', String(Math.min(3, Math.max(1, (c.results || []).length))));
     box.innerHTML = (c.results || [])
-      .map((r, index) => renderArchivedResultCard(r, `contribution-result-${index}`, { textPreview: 'plain' }))
+      .map((r, index) => renderArchivedResultCard(r, `contribution-result-${index}`, {
+        textPreview: 'plain',
+        previewUrl: sharedPreviewPath('contribution', c.id, index),
+      }))
       .join('');
     $('#btn-delete-contribution')?.classList.toggle('hidden', !state.isAdmin);
     openModal('modal-detail');
@@ -2991,7 +3083,9 @@
       <pre class="history-prompt">${escapeHtml(item.prompt || '')}</pre>
       <div class="compare history-compare">
         ${(item.results || [])
-          .map((r, index) => renderArchivedResultCard(r, `history-result-${index}`))
+          .map((r, index) => renderArchivedResultCard(r, `history-result-${index}`, {
+            previewUrl: sharedPreviewPath('history', item.id, index),
+          }))
           .join('')}
       </div>`;
   }

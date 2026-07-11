@@ -124,10 +124,10 @@ test('public HTML previews use a narrow network allowlist', () => {
 });
 
 test('fullscreen HTML previews receive keyboard focus without weakening isolation', () => {
-  const fullscreen = functionBody('openFullscreen');
+  const fullscreen = functionBody('presentFullscreen');
   const iframe = functionBody('renderArtifactIframe');
   const modal = functionBody('openModal');
-  assert.match(fullscreen, /renderArtifactIframe\(artifact,\s*\{[^}]*focusable:\s*true/);
+  assert.match(fullscreen, /renderArtifactIframe\(resolvedArtifact,\s*\{[^}]*focusable:\s*true/);
   assert.match(iframe, /sandbox="allow-scripts"/);
   assert.match(iframe, /referrerpolicy="no-referrer"/);
   assert.match(iframe, /focusable \? ' tabindex="0"'/);
@@ -135,6 +135,19 @@ test('fullscreen HTML previews receive keyboard focus without weakening isolatio
   assert.match(fullscreen, /openModal\('modal-preview-fs',\s*[^)]+\)/);
   assert.match(modal, /function openModal\(id,\s*initialFocus\s*=\s*null\)/);
   assert.match(modal, /initialFocus\s*&&\s*overlay\.contains\(initialFocus\)[\s\S]*\?\s*initialFocus[\s\S]*:\s*overlay\.querySelector/);
+});
+
+test('late-selected free-compare models expose a first-run action', () => {
+  const card = functionBody('renderTestResultCard');
+  const rerunButton = functionBody('renderRerunButton');
+  const rerun = functionBody('rerunSlot');
+  assert.match(card, /尚未运行/);
+  assert.match(card, /renderRerunButton\(m\.key, 'test', false, '运行此模型'\)/);
+  assert.match(rerunButton, /label = '重新运行'/);
+  assert.match(rerunButton, /data-test-rerun/);
+  assert.match(rerun, /const isFirstTestRun = isTest && !current/);
+  assert.match(rerun, /isFirstTestRun \? '正在运行' : '正在重新运行'/);
+  assert.match(rerun, /isFirstTestRun \? '已生成' : '已重新生成'/);
 });
 
 test('result cards bound long output without truncating the generated content', () => {
@@ -169,7 +182,8 @@ test('failed live cards expose the correct per-source rerun action', () => {
 
   assert.match(control, /source === 'test' \? 'data-test-rerun' : 'data-rerun'/);
   assert.match(control, /if \(source === 'published'\) return ''/);
-  assert.match(control, />重新运行<\/button>/);
+  assert.match(control, /label = '重新运行'/);
+  assert.match(control, />\$\{escapeHtml\(label\)\}<\/button>/);
   assert.match(caseError, /if \(!published\) tabs = renderErrorRerun\(m\.key, 'case'\)/);
   assert.match(testError, /tabs = renderErrorRerun\(m\.key, 'test'\)/);
   assert.match(source, /closest\('\[data-rerun\]'\)[\s\S]{0,220}rerunSlot\(rerun\.dataset\.rerun, 'case'\)/);
@@ -291,11 +305,13 @@ test('community and run-history cards share independent sandboxed preview surfac
   const surface = functionBody('renderArchivedResultSurface');
   const switchView = functionBody('handleArchivedResultClick');
   const keyboard = functionBody('handleArchivedResultKeydown');
+  const actions = functionBody('renderArchivedActions');
+  const archivedFullscreen = functionBody('openArchivedFullscreen');
   const iframe = functionBody('renderArtifactIframe');
 
   assert.match(contribution, /renderArchivedResultCard\(r,\s*`contribution-result-\$\{index\}`,[\s\S]*textPreview:\s*'plain'/);
   assert.match(contribution, /--compare-cols[\s\S]*Math\.min\(3,\s*Math\.max\(1,/);
-  assert.match(history, /renderArchivedResultCard\(r,\s*`history-result-\$\{index\}`\)/);
+  assert.match(history, /renderArchivedResultCard\(r,\s*`history-result-\$\{index\}`,\s*\{/);
   assert.match(card, /row\?\.outputType === 'html' \? 'html' : 'text'/);
   assert.match(surface, /renderableArtifact\(content, outputType\)/);
   assert.match(surface, /!artifact && textPreview === 'plain'[\s\S]*escapeHtml\(content\)/);
@@ -304,6 +320,10 @@ test('community and run-history cards share independent sandboxed preview surfac
   assert.match(surface, /role="tabpanel" aria-labelledby=/);
   assert.match(surface, /renderArtifactIframe\(artifact,[\s\S]*loading:\s*true/);
   assert.match(iframe, /loading \? ' loading="lazy"'/);
+  assert.match(actions, /data-archive-fs/);
+  assert.match(actions, /iconLinkAction\(\{ href: previewUrl/);
+  assert.match(archivedFullscreen, /presentFullscreen\(/);
+  assert.match(archivedFullscreen, /iframe\?\.srcdoc/);
   assert.match(switchView, /closest\('\[data-archive-card\]'\)/);
   assert.match(switchView, /panel\.hidden = panel\.dataset\.archivePanel !== mode/);
   assert.match(keyboard, /'ArrowLeft', 'ArrowRight', 'Home', 'End'/);
@@ -312,6 +332,39 @@ test('community and run-history cards share independent sandboxed preview surfac
   assert.match(source, /#history-detail'\)\.addEventListener\('keydown', handleArchivedResultKeydown\)/);
   assert.doesNotMatch(contribution, /默认只展示源码/);
   assert.doesNotMatch(history, /默认只展示源码/);
+});
+
+test('persisted results use stable shareable preview paths and a sandboxed server shell', () => {
+  const pathBuilder = functionBody('sharedPreviewPath');
+  const caseCard = functionBody('renderCaseResultCard');
+  const contribution = functionBody('showContribution');
+  const history = functionBody('renderHistoryDetail');
+  assert.match(pathBuilder, /\/preview\/case\//);
+  assert.match(pathBuilder, /\/preview\/\$\{source\}\//);
+  assert.match(caseCard, /sharedPreviewPath\('case'/);
+  assert.match(caseCard, /iconLinkAction\(\{ href: previewUrl/);
+  assert.match(contribution, /sharedPreviewPath\('contribution', c\.id, index\)/);
+  assert.match(history, /sharedPreviewPath\('history', item\.id, index\)/);
+  assert.match(serverSource, /app\.get\('\/preview\/case\/:caseId\/:version\/:index'/);
+  assert.match(serverSource, /app\.get\('\/preview\/contribution\/:id\/:index'/);
+  assert.match(serverSource, /app\.get\('\/preview\/history\/:id\/:index'/);
+  assert.match(serverSource, /<iframe sandbox="\$\{artifact \? 'allow-scripts' : ''\}" referrerpolicy="no-referrer" srcdoc=/);
+  assert.doesNotMatch(serverSource, /<iframe[^>]*allow-same-origin/);
+});
+
+test('nested preview dialogs hide the underlying contribution dialog from focus', () => {
+  const sync = functionBody('syncModalStack');
+  const open = functionBody('openModal');
+  const close = functionBody('closeModal');
+  assert.match(indexSource, /id="modal-detail"[^>]*aria-labelledby="detail-title"/);
+  assert.match(indexSource, /id="modal-preview-fs"[^>]*aria-labelledby="fs-title"/);
+  assert.match(sync, /\[\.\.\.document\.body\.children\]/);
+  assert.match(sync, /topOverlay && element !== topOverlay/);
+  assert.match(sync, /element\.setAttribute\('inert', ''\)/);
+  assert.match(sync, /element\.removeAttribute\('inert'\)/);
+  assert.match(sync, /element\.dataset\.modalInert/);
+  assert.match(open, /syncModalStack\(\)/);
+  assert.match(close, /syncModalStack\(\)/);
 });
 
 test('new-window HTML actions open an isolated rendered preview instead of top-level model code', () => {

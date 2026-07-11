@@ -213,6 +213,88 @@ function sanitizeText(s, max = 120000) {
   return s.slice(0, max);
 }
 
+function escapePreviewHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function decodePreviewEntities(value) {
+  return String(value || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function stripPreviewFence(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^```[\w+-]*\s*\n([\s\S]*?)\n```\s*$/);
+  return match ? match[1].trim() : text;
+}
+
+function extractSharedPreviewMarkup(content, title) {
+  const decoded = decodePreviewEntities(stripPreviewFence(content));
+  const completeHtml = decoded.match(/(?:<!doctype\s+html[^>]*>\s*)?<html[\s\S]*?<\/html>/i);
+  if (completeHtml) return completeHtml[0].trim();
+
+  const htmlStart = decoded.search(/<!doctype\s+html|<html[\s>]/i);
+  if (htmlStart >= 0) return decoded.slice(htmlStart).replace(/\n?```[\s\S]*$/g, '').trim();
+
+  const safeTitle = escapePreviewHtml(title || '模型输出预览');
+  const body = decoded.match(/<body[\s>][\s\S]*?<\/body>/i);
+  if (body) {
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${safeTitle}</title></head>${body[0]}</html>`;
+  }
+
+  const svg = decoded.match(/<svg[\s>][\s\S]*?<\/svg>/i);
+  if (svg) {
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${safeTitle}</title><style>html,body{margin:0;min-height:100%;background:#fff}body{display:grid;place-items:center;padding:12px;box-sizing:border-box}svg{max-width:100%;height:auto;display:block}</style></head><body>${svg[0]}</body></html>`;
+  }
+
+  const component = decoded.match(/<(?:div|main|section|article|canvas)[\s>][\s\S]*<\/(?:div|main|section|article|canvas)>/i);
+  if (component) {
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${safeTitle}</title></head><body>${component[0]}</body></html>`;
+  }
+  return '';
+}
+
+function sharedTextPreviewDocument(content, title) {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapePreviewHtml(title || '模型输出原文')}</title><style>
+    :root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:24px;background:#fff;color:#18181b;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}@media(prefers-color-scheme:dark){body{background:#171b24;color:#e8eaef}}
+  </style></head><body><pre>${escapePreviewHtml(content)}</pre></body></html>`;
+}
+
+function previewResultAt(results, rawIndex) {
+  const index = Number(rawIndex);
+  if (!Number.isInteger(index) || index < 0) return null;
+  const row = Array.isArray(results) ? results[index] : null;
+  return row && typeof row.content === 'string' && row.content.trim() ? row : null;
+}
+
+function sendSharedPreview(res, row, title) {
+  const artifact = row.outputType === 'html' ? extractSharedPreviewMarkup(row.content, title) : '';
+  const previewDocument = artifact || sharedTextPreviewDocument(row.content, title);
+  const safeTitle = escapePreviewHtml(title || (artifact ? '模型输出预览' : '模型输出原文'));
+  const shell = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${safeTitle}</title><style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#fff}iframe{display:block;width:100%;height:100%;border:0;background:#fff}
+  </style></head><body><iframe sandbox="${artifact ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" srcdoc="${escapePreviewHtml(previewDocument)}" title="${safeTitle}"></iframe></body></html>`;
+  const policy = "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'; frame-src 'self'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com";
+  res.set({
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': policy,
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-site',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.status(200).type('html').send(shell);
+}
+
 function effectiveCaseSystem(c) {
   const system = c?.system || '';
   return c?.outputType === 'html' ? [HTML_OUTPUT_SYSTEM, system].filter(Boolean).join('\n\n') : system;
@@ -801,6 +883,44 @@ app.get('/api/meta', (_req, res) => {
     version: '1.2.0',
     stats: db.stats(),
   });
+});
+
+app.get('/preview/case/:caseId/:version/:index', (req, res) => {
+  const c = db.getCase(req.params.caseId);
+  const version = Number(req.params.version);
+  const publishedRun = c?.status === 'published' && Number.isInteger(version) && version > 0
+    ? db.getPublishedRunByVersion(req.params.caseId, version)
+    : null;
+  const row = previewResultAt(publishedRun?.results, req.params.index);
+  if (!publishedRun || !row) {
+    res.status(404).type('text/plain').send('预览不存在\n');
+    return;
+  }
+  sendSharedPreview(
+    res,
+    { ...row, outputType: row.outputType === 'html' || publishedRun.outputType === 'html' ? 'html' : 'text' },
+    row.label || row.model || publishedRun.caseTitle || '题库结果预览'
+  );
+});
+
+app.get('/preview/contribution/:id/:index', (req, res) => {
+  const contribution = db.getContribution(req.params.id);
+  const row = previewResultAt(contribution?.results, req.params.index);
+  if (!contribution || !row) {
+    res.status(404).type('text/plain').send('预览不存在\n');
+    return;
+  }
+  sendSharedPreview(res, row, row.label || row.model || contribution.caseTitle || '贡献结果预览');
+});
+
+app.get('/preview/history/:id/:index', (req, res) => {
+  const history = db.getRunHistory(req.params.id);
+  const row = previewResultAt(history?.results, req.params.index);
+  if (!history || !row) {
+    res.status(404).type('text/plain').send('预览不存在\n');
+    return;
+  }
+  sendSharedPreview(res, row, row.label || row.model || history.caseTitle || '测试记录预览');
 });
 
 app.get('/api/cases', (req, res) => {
