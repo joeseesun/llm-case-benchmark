@@ -423,12 +423,23 @@
     return escapeHtml(src).replace(/\n/g, '<br>');
   }
 
+  function previewCspPolicy(frameSource = "'none'") {
+    return `default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-src ${frameSource}; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com;`;
+  }
+
   function applyPreviewCsp(markup) {
-    const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com;">`;
+    const policy = previewCspPolicy();
     const html = String(markup || '');
-    if (/<head[\s>]/i.test(html)) return html.replace(/<head([^>]*)>/i, `<head$1>${csp}`);
-    if (/<html[\s>]/i.test(html)) return html.replace(/<html([^>]*)>/i, `<html$1><head>${csp}</head>`);
-    return `<!doctype html><html><head><meta charset="utf-8">${csp}</head><body>${html}</body></html>`;
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const meta = doc.createElement('meta');
+      meta.httpEquiv = 'Content-Security-Policy';
+      meta.content = policy;
+      doc.head.prepend(meta);
+      return `<!doctype html>${doc.documentElement.outerHTML}`;
+    } catch {
+      return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"></head><body>${html}</body></html>`;
+    }
   }
 
   function wrapSvgForPreview(svg) {
@@ -467,6 +478,48 @@
     const svg = extractSvgMarkup(code) || extractSvgMarkup(raw);
     if (svg) return { source: svg, preview: wrapSvgForPreview(svg), kind: 'svg' };
     return null;
+  }
+
+  function renderArtifactIframe(artifact, { title = 'HTML 预览', loading = false, focusable = false } = {}) {
+    if (!artifact?.preview) return '';
+    return `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="${escapeHtml(title)}"${loading ? ' loading="lazy"' : ''}${focusable ? ' tabindex="0"' : ''}></iframe>`;
+  }
+
+  function renderTextPreviewDocument(content) {
+    const csp = "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; img-src 'none'; media-src 'none'; style-src 'unsafe-inline'; script-src 'none'";
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${csp}"><title>模型输出原文</title><style>
+      :root{color-scheme:light dark}*{box-sizing:border-box}body{margin:0;padding:20px;background:#fff;color:#18181b;font:13px/1.65 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}@media(prefers-color-scheme:dark){body{background:#171b24;color:#e8eaef}}
+    </style></head><body><pre>${escapeHtml(content)}</pre></body></html>`;
+  }
+
+  function openIsolatedPreviewDocument(previewDocument, title = '模型输出预览') {
+    const wrapperCsp = previewCspPolicy('blob:');
+    const safeTitle = escapeHtml(title);
+    const previewUrl = URL.createObjectURL(new Blob([previewDocument], { type: 'text/html;charset=utf-8' }));
+    const wrapper = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${wrapperCsp}"><title>${safeTitle}</title><style>
+      html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#fff}iframe{display:block;width:100%;height:100%;border:0;background:#fff}
+    </style></head><body><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="${escapeHtml(previewUrl)}" title="${safeTitle}"></iframe></body></html>`;
+    const url = URL.createObjectURL(new Blob([wrapper], { type: 'text/html;charset=utf-8' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    anchor.hidden = true;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      URL.revokeObjectURL(previewUrl);
+    }, 60_000);
+  }
+
+  function openResultInNewWindow(content, outputType, title = '模型输出预览') {
+    const artifact = renderableArtifact(content, outputType);
+    openIsolatedPreviewDocument(
+      artifact ? artifact.preview : renderTextPreviewDocument(content),
+      artifact ? title : `${title} · 原文`
+    );
   }
 
   function testResultOutputType(row) {
@@ -511,7 +564,7 @@
       const body =
         normalizedMode === 'source'
           ? `<div class="col-body"><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
-          : `<div class="col-body preview-body"><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="preview"></iframe></div>`;
+          : `<div class="col-body preview-body">${renderArtifactIframe(artifact)}</div>`;
       return { tabs, body };
     }
     const body =
@@ -592,7 +645,7 @@
     const body = $('#fs-body');
     let initialFocus = null;
     if (artifact) {
-      body.innerHTML = `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="fullscreen" tabindex="0"></iframe>`;
+      body.innerHTML = renderArtifactIframe(artifact, { title: '全屏 HTML 预览', focusable: true });
       initialFocus = body.querySelector('iframe');
     } else {
       body.innerHTML = `<div class="col-body md" tabindex="0" style="padding:20px;overflow:auto;height:100%;background:var(--surface);color:var(--text)">${renderMarkdown(content)}</div>`;
@@ -1164,6 +1217,7 @@
   function renderCaseResultCard(m, { c, published, outputType }) {
     const r = state.results[m.key];
     const mode = state.viewModes[m.key] || 'preview';
+    let newWindowOutputType = outputType;
     let body = '<div class="col-body empty">等待运行…</div>';
     let stats = '—';
     let tabs = '';
@@ -1177,6 +1231,7 @@
     } else if (r?.status === 'ok') {
       const content = r.content || '';
       const resultOutputType = published ? outputType : (r.outputType === 'html' ? 'html' : outputType);
+      newWindowOutputType = resultOutputType;
       const surface = renderResultSurface({
         slotKey: m.key,
         source: published ? 'published' : 'case',
@@ -1190,8 +1245,9 @@
       const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
       stats = r.latencyMs != null ? `${r.latencyMs} ms${tok}` : `—${tok}`;
     }
+    const opensArtifactPreview = r?.status === 'ok' && !!renderableArtifact(r.content, newWindowOutputType);
     return `
-      <article class="col ${published ? 'published-col' : ''} ${outputType === 'html' ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
+      <article class="col ${published ? 'published-col' : ''} ${opensArtifactPreview ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
         <div class="col-head">
           <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
           <div class="stats">${escapeHtml(stats)}</div>
@@ -1202,7 +1258,7 @@
         ${r?.status === 'ok' ? `<div class="col-actions">
           ${iconAction({ attr: 'data-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
           ${iconAction({ attr: 'data-fs', key: m.key, iconName: 'maximize', label: '全屏查看' })}
-          ${iconAction({ attr: 'data-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
+          ${iconAction({ attr: 'data-open-result', key: m.key, iconName: 'external', label: opensArtifactPreview ? '新窗口打开预览' : '新窗口打开原文' })}
           ${published ? '' : `<button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>`}
         </div>` : ''}
       </article>`;
@@ -1236,6 +1292,7 @@
       const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
       stats = `${r.latencyMs ?? '—'}ms${tok}`;
     }
+    const opensArtifactPreview = r?.status === 'ok' && !!renderableArtifact(r.content, outputType);
     return `
       <article class="col" data-slot="${escapeHtml(m.key)}">
         <div class="col-head">
@@ -1247,7 +1304,7 @@
         ${r?.status === 'ok' ? `<div class="col-actions">
           ${iconAction({ attr: 'data-test-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
           ${iconAction({ attr: 'data-test-fs', key: m.key, iconName: 'maximize', label: '全屏查看' })}
-          ${iconAction({ attr: 'data-test-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
+          ${iconAction({ attr: 'data-test-open-result', key: m.key, iconName: 'external', label: opensArtifactPreview ? '新窗口打开预览' : '新窗口打开原文' })}
         </div>` : ''}
       </article>`;
   }
@@ -2686,6 +2743,117 @@
       .join('');
   }
 
+  function renderArchivedResultSurface({ archiveKey, content, outputType, previewTitle, textPreview = 'markdown' }) {
+    const artifact = renderableArtifact(content, outputType);
+    if (!artifact && textPreview === 'plain') {
+      return {
+        artifact: null,
+        tabs: '',
+        body: `<div class="col-body" data-archive-panel="raw">${escapeHtml(content)}</div>`,
+        actions: `<div class="col-actions archive-actions">
+          ${iconAction({ attr: 'data-archive-open-result', key: archiveKey, iconName: 'external', label: '新窗口打开原文' })}
+        </div>`,
+      };
+    }
+    const previewMode = artifact ? 'preview' : 'md';
+    const sourceMode = artifact ? 'source' : 'raw';
+    const previewLabel = artifact ? '预览' : 'Markdown';
+    const sourceLabel = artifact ? '源码' : '原文';
+    const previewPanelId = `${archiveKey}-${previewMode}`;
+    const sourcePanelId = `${archiveKey}-${sourceMode}`;
+    const previewTabId = `${previewPanelId}-tab`;
+    const sourceTabId = `${sourcePanelId}-tab`;
+    const previewBody = artifact
+      ? `<div class="col-body preview-body" id="${escapeHtml(previewPanelId)}" role="tabpanel" aria-labelledby="${escapeHtml(previewTabId)}" data-archive-panel="preview">${renderArtifactIframe(artifact, { title: `${previewTitle} HTML 预览`, loading: true })}</div>`
+      : `<div class="col-body md" id="${escapeHtml(previewPanelId)}" role="tabpanel" aria-labelledby="${escapeHtml(previewTabId)}" data-archive-panel="md">${outputType === 'html' ? '<div class="artifact-note">未检测到可预览的 HTML / SVG，已按 Markdown 显示。</div>' : ''}${renderMarkdown(content)}</div>`;
+    const sourceBody = artifact
+      ? `<div class="col-body" id="${escapeHtml(sourcePanelId)}" role="tabpanel" aria-labelledby="${escapeHtml(sourceTabId)}" data-archive-panel="source" hidden><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
+      : `<div class="col-body" id="${escapeHtml(sourcePanelId)}" role="tabpanel" aria-labelledby="${escapeHtml(sourceTabId)}" data-archive-panel="raw" hidden>${escapeHtml(content)}</div>`;
+    return {
+      artifact,
+      tabs: `<div class="col-tabs archive-tabs">
+        <span class="tab-set" role="tablist" aria-label="结果展示方式">
+          <button type="button" id="${escapeHtml(previewTabId)}" role="tab" data-archive-view="${escapeHtml(archiveKey)}" data-mode="${previewMode}" aria-controls="${escapeHtml(previewPanelId)}" aria-selected="true">${previewLabel}</button>
+          <button type="button" id="${escapeHtml(sourceTabId)}" role="tab" data-archive-view="${escapeHtml(archiveKey)}" data-mode="${sourceMode}" aria-controls="${escapeHtml(sourcePanelId)}" aria-selected="false" tabindex="-1">${sourceLabel}</button>
+        </span>
+      </div>`,
+      body: `${previewBody}${sourceBody}`,
+      actions: `<div class="col-actions archive-actions">
+        ${iconAction({ attr: 'data-archive-open-result', key: archiveKey, iconName: 'external', label: artifact ? '新窗口打开预览' : '新窗口打开原文' })}
+      </div>`,
+    };
+  }
+
+  function renderArchivedResultCard(row, archiveKey, { textPreview = 'markdown' } = {}) {
+    const outputType = row?.outputType === 'html' ? 'html' : 'text';
+    const title = row?.label || row?.model || '模型输出';
+    const surface = renderArchivedResultSurface({
+      archiveKey,
+      content: row?.content || '',
+      outputType,
+      previewTitle: title,
+      textPreview,
+    });
+    return `
+      <article class="col ${surface.artifact ? 'artifact-col' : 'text-col'}" data-archive-card="${escapeHtml(archiveKey)}">
+        <div class="col-head">
+          <h3>${escapeHtml(title)}</h3>
+          <div class="stats">${row?.latencyMs != null ? `${escapeHtml(row.latencyMs)}ms` : '—'}</div>
+        </div>
+        ${surface.tabs}
+        ${surface.body}
+        ${surface.actions}
+      </article>`;
+  }
+
+  function handleArchivedResultClick(event) {
+    const viewButton = event.target.closest('[data-archive-view]');
+    if (viewButton) {
+      const card = viewButton.closest('[data-archive-card]');
+      if (!card) return;
+      const mode = viewButton.dataset.mode;
+      card.querySelectorAll('[data-archive-view]').forEach((button) => {
+        const selected = button.dataset.mode === mode;
+        button.setAttribute('aria-selected', String(selected));
+        button.tabIndex = selected ? 0 : -1;
+      });
+      card.querySelectorAll('[data-archive-panel]').forEach((panel) => {
+        panel.hidden = panel.dataset.archivePanel !== mode;
+      });
+      return;
+    }
+
+    const openButton = event.target.closest('[data-archive-open-result]');
+    if (!openButton) return;
+    const card = openButton.closest('[data-archive-card]');
+    if (!card) return;
+    const title = card.querySelector('.col-head h3')?.textContent?.trim() || '模型输出预览';
+    const iframe = card.querySelector('[data-archive-panel="preview"] iframe');
+    if (iframe?.srcdoc) {
+      openIsolatedPreviewDocument(iframe.srcdoc, title);
+      return;
+    }
+    const raw = card.querySelector('[data-archive-panel="raw"]')?.textContent || '';
+    openResultInNewWindow(raw, 'text', title);
+  }
+
+  function handleArchivedResultKeydown(event) {
+    const current = event.target.closest('[data-archive-view]');
+    if (!current || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    const card = current.closest('[data-archive-card]');
+    const tabs = [...(card?.querySelectorAll('[data-archive-view]') || [])];
+    const index = tabs.indexOf(current);
+    if (index < 0 || tabs.length < 2) return;
+    const next = event.key === 'Home'
+      ? tabs[0]
+      : event.key === 'End'
+        ? tabs.at(-1)
+        : tabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    event.preventDefault();
+    next.focus();
+    next.click();
+  }
+
   function showContribution(id) {
     const c = state.contributions.find((x) => x.id === id);
     if (!c) return;
@@ -2693,22 +2861,9 @@
     $('#detail-meta').textContent = `${c.author || '匿名'} · ${new Date(c.createdAt).toLocaleString()} · ${categoryLabel(c.category)}`;
     $('#detail-prompt').textContent = c.prompt || '';
     const box = $('#detail-compare');
+    box.style.setProperty('--compare-cols', String(Math.min(3, Math.max(1, (c.results || []).length))));
     box.innerHTML = (c.results || [])
-      .map((r) => {
-        const outputType = r.outputType === 'html' ? 'html' : 'text';
-        const artifact = renderableArtifact(r.content, outputType);
-        const body = artifact
-          ? `<div class="col-body"><p class="artifact-note">社区贡献未经管理员审核，默认只展示源码。</p><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
-          : `<div class="col-body">${escapeHtml(r.content || '')}</div>`;
-        return `
-          <article class="col">
-            <div class="col-head">
-              <h3>${escapeHtml(r.label || r.model)}</h3>
-              <div class="stats">${r.latencyMs != null ? `${r.latencyMs}ms` : '—'}</div>
-            </div>
-            ${body}
-          </article>`;
-      })
+      .map((r, index) => renderArchivedResultCard(r, `contribution-result-${index}`, { textPreview: 'plain' }))
       .join('');
     openModal('modal-detail');
   }
@@ -2727,21 +2882,7 @@
       <pre class="history-prompt">${escapeHtml(item.prompt || '')}</pre>
       <div class="compare history-compare">
         ${(item.results || [])
-          .map((r) => {
-            const outputType = r.outputType === 'html' ? 'html' : 'text';
-            const artifact = renderableArtifact(r.content, outputType);
-            const body = artifact
-              ? `<div class="col-body"><p class="artifact-note">普通运行历史未经发布审核，默认只展示源码。</p><pre class="source">${escapeHtml(artifact.source)}</pre></div>`
-              : `<div class="col-body md" style="padding:16px;overflow:auto">${renderMarkdown(r.content || '')}</div>`;
-            return `
-              <article class="col">
-                <div class="col-head">
-                  <h3>${escapeHtml(r.label || r.model)}</h3>
-                  <div class="stats">${r.latencyMs != null ? `${r.latencyMs}ms` : '—'}</div>
-                </div>
-                ${body}
-              </article>`;
-          })
+          .map((r, index) => renderArchivedResultCard(r, `history-result-${index}`))
           .join('')}
       </div>`;
   }
@@ -3206,6 +3347,10 @@
       const t = e.target.closest('[data-contrib]');
       if (t) showContribution(t.dataset.contrib);
     });
+    $('#detail-compare').addEventListener('click', handleArchivedResultClick);
+    $('#detail-compare').addEventListener('keydown', handleArchivedResultKeydown);
+    $('#history-detail').addEventListener('click', handleArchivedResultClick);
+    $('#history-detail').addEventListener('keydown', handleArchivedResultKeydown);
 
     $('#history-list')?.addEventListener('click', (e) => {
       if (e.target.closest('[data-history-retry]')) {
@@ -3270,7 +3415,7 @@
         return;
       }
       const copy = e.target.closest('[data-copy]');
-      const raw = e.target.closest('[data-raw]');
+      const openResult = e.target.closest('[data-open-result]');
       if (copy) {
         const r = state.results[copy.dataset.copy];
         if (r?.content) {
@@ -3278,16 +3423,16 @@
           toast('已复制');
         }
       }
-      if (raw) {
-        const r = state.results[raw.dataset.raw];
+      if (openResult) {
+        const r = state.results[openResult.dataset.openResult];
         if (r?.content) {
-          const w = window.open('', '_blank');
-          if (w) {
-            w.document.write(
-              `<pre style="white-space:pre-wrap;padding:16px;font:13px/1.6 system-ui">${escapeHtml(r.content)}</pre>`
-            );
-            w.document.close();
-          }
+          const published = state.resultOrigin === 'published';
+          const fallbackOutputType = published
+            ? state.publishedRun?.outputType || caseOutputType(activeCase())
+            : caseOutputType(activeCase());
+          const outputType = r.outputType === 'html' ? 'html' : fallbackOutputType;
+          const title = openResult.closest('.col')?.querySelector('.col-head h3')?.textContent?.trim() || '模型输出预览';
+          openResultInNewWindow(r.content, outputType, title);
         }
       }
     });
@@ -3324,7 +3469,7 @@
         return;
       }
       const copy = e.target.closest('[data-test-copy]');
-      const raw = e.target.closest('[data-test-raw]');
+      const openResult = e.target.closest('[data-test-open-result]');
       if (copy) {
         const r = state.testResults[copy.dataset.testCopy];
         if (r?.content) {
@@ -3332,16 +3477,11 @@
           toast('已复制');
         }
       }
-      if (raw) {
-        const r = state.testResults[raw.dataset.testRaw];
+      if (openResult) {
+        const r = state.testResults[openResult.dataset.testOpenResult];
         if (r?.content) {
-          const w = window.open('', '_blank');
-          if (w) {
-            w.document.write(
-              `<pre style="white-space:pre-wrap;padding:16px;font:13px/1.6 system-ui">${escapeHtml(r.content)}</pre>`
-            );
-            w.document.close();
-          }
+          const title = openResult.closest('.col')?.querySelector('.col-head h3')?.textContent?.trim() || '模型输出预览';
+          openResultInNewWindow(r.content, testResultOutputType(r), title);
         }
       }
     });

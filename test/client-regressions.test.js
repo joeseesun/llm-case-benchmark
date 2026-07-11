@@ -112,19 +112,26 @@ test('published runs record effective request metadata and ignore stale case cal
 
 test('public HTML previews use a narrow network allowlist', () => {
   const body = functionBody('applyPreviewCsp');
-  assert.match(body, /connect-src 'none'/);
-  assert.match(body, /script-src 'unsafe-inline' https:\/\/cdn\.jsdelivr\.net https:\/\/unpkg\.com/);
-  assert.doesNotMatch(body, /img-src[^;]*https:/);
-  assert.doesNotMatch(body, /script-src[^;]* https:;/);
+  const policy = functionBody('previewCspPolicy');
+  assert.match(body, /const policy = previewCspPolicy\(\)/);
+  assert.match(policy, /connect-src 'none'/);
+  assert.match(policy, /script-src 'unsafe-inline' https:\/\/cdn\.jsdelivr\.net https:\/\/unpkg\.com/);
+  assert.doesNotMatch(policy, /img-src[^;]*https:/);
+  assert.doesNotMatch(policy, /script-src[^;]* https:;/);
+  assert.match(body, /new DOMParser\(\)\.parseFromString\(html, 'text\/html'\)/);
+  assert.match(body, /doc\.head\.prepend\(meta\)/);
+  assert.doesNotMatch(body, /replace\(\/<head|test\(html\)[\s\S]*<head/i);
 });
 
 test('fullscreen HTML previews receive keyboard focus without weakening isolation', () => {
   const fullscreen = functionBody('openFullscreen');
+  const iframe = functionBody('renderArtifactIframe');
   const modal = functionBody('openModal');
-  assert.match(fullscreen, /<iframe[^>]*tabindex="0"[^>]*>/);
-  assert.match(fullscreen, /sandbox="allow-scripts"/);
-  assert.match(fullscreen, /referrerpolicy="no-referrer"/);
-  assert.doesNotMatch(fullscreen, /allow-same-origin|allow-popups|allow-modals|allow-forms/);
+  assert.match(fullscreen, /renderArtifactIframe\(artifact,\s*\{[^}]*focusable:\s*true/);
+  assert.match(iframe, /sandbox="allow-scripts"/);
+  assert.match(iframe, /referrerpolicy="no-referrer"/);
+  assert.match(iframe, /focusable \? ' tabindex="0"'/);
+  assert.doesNotMatch(iframe, /allow-same-origin|allow-popups|allow-modals|allow-forms/);
   assert.match(fullscreen, /openModal\('modal-preview-fs',\s*[^)]+\)/);
   assert.match(modal, /function openModal\(id,\s*initialFocus\s*=\s*null\)/);
   assert.match(modal, /initialFocus\s*&&\s*overlay\.contains\(initialFocus\)[\s\S]*\?\s*initialFocus[\s\S]*:\s*overlay\.querySelector/);
@@ -277,11 +284,59 @@ test('login rate limits trust only loopback proxy chains and use the last forwar
   assert.doesNotMatch(body, /split\(','\)\[0\]/);
 });
 
-test('unreviewed community and run-history HTML is source-only', () => {
+test('community and run-history cards share independent sandboxed preview surfaces', () => {
   const contribution = functionBody('showContribution');
   const history = functionBody('renderHistoryDetail');
-  assert.match(contribution, /社区贡献未经管理员审核/);
-  assert.match(history, /普通运行历史未经发布审核/);
-  assert.doesNotMatch(contribution, /<iframe/);
-  assert.doesNotMatch(history, /<iframe/);
+  const card = functionBody('renderArchivedResultCard');
+  const surface = functionBody('renderArchivedResultSurface');
+  const switchView = functionBody('handleArchivedResultClick');
+  const keyboard = functionBody('handleArchivedResultKeydown');
+  const iframe = functionBody('renderArtifactIframe');
+
+  assert.match(contribution, /renderArchivedResultCard\(r,\s*`contribution-result-\$\{index\}`,[\s\S]*textPreview:\s*'plain'/);
+  assert.match(contribution, /--compare-cols[\s\S]*Math\.min\(3,\s*Math\.max\(1,/);
+  assert.match(history, /renderArchivedResultCard\(r,\s*`history-result-\$\{index\}`\)/);
+  assert.match(card, /row\?\.outputType === 'html' \? 'html' : 'text'/);
+  assert.match(surface, /renderableArtifact\(content, outputType\)/);
+  assert.match(surface, /!artifact && textPreview === 'plain'[\s\S]*escapeHtml\(content\)/);
+  assert.match(surface, /data-archive-panel="preview"/);
+  assert.match(surface, /data-archive-panel="source" hidden/);
+  assert.match(surface, /role="tabpanel" aria-labelledby=/);
+  assert.match(surface, /renderArtifactIframe\(artifact,[\s\S]*loading:\s*true/);
+  assert.match(iframe, /loading \? ' loading="lazy"'/);
+  assert.match(switchView, /closest\('\[data-archive-card\]'\)/);
+  assert.match(switchView, /panel\.hidden = panel\.dataset\.archivePanel !== mode/);
+  assert.match(keyboard, /'ArrowLeft', 'ArrowRight', 'Home', 'End'/);
+  assert.match(keyboard, /event\.preventDefault\(\)[\s\S]*next\.focus\(\)[\s\S]*next\.click\(\)/);
+  assert.match(source, /#detail-compare'\)\.addEventListener\('keydown', handleArchivedResultKeydown\)/);
+  assert.match(source, /#history-detail'\)\.addEventListener\('keydown', handleArchivedResultKeydown\)/);
+  assert.doesNotMatch(contribution, /默认只展示源码/);
+  assert.doesNotMatch(history, /默认只展示源码/);
+});
+
+test('new-window HTML actions open an isolated rendered preview instead of top-level model code', () => {
+  const wrapper = functionBody('openIsolatedPreviewDocument');
+  const openResult = functionBody('openResultInNewWindow');
+  const caseCard = functionBody('renderCaseResultCard');
+  const testCard = functionBody('renderTestResultCard');
+  const archiveClick = functionBody('handleArchivedResultClick');
+
+  assert.match(openResult, /artifact \? artifact\.preview : renderTextPreviewDocument\(content\)/);
+  assert.match(wrapper, /previewUrl = URL\.createObjectURL\(new Blob\(\[previewDocument\]/);
+  assert.match(wrapper, /new Blob\(\[wrapper\]/);
+  assert.match(wrapper, /wrapperCsp = previewCspPolicy\('blob:'\)/);
+  assert.match(wrapper, /<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="\$\{escapeHtml\(previewUrl\)\}"/);
+  assert.match(wrapper, /anchor\.target = '_blank'/);
+  assert.match(wrapper, /anchor\.rel = 'noopener noreferrer'/);
+  assert.match(wrapper, /URL\.revokeObjectURL\(url\)/);
+  assert.match(wrapper, /URL\.revokeObjectURL\(previewUrl\)/);
+  assert.doesNotMatch(wrapper, /srcdoc=/);
+  assert.doesNotMatch(wrapper, /<script[\s>]/);
+  assert.doesNotMatch(wrapper, /allow-same-origin|allow-popups|allow-modals|allow-forms/);
+  assert.match(caseCard, /data-open-result/);
+  assert.match(testCard, /data-test-open-result/);
+  assert.match(caseCard, /新窗口打开预览/);
+  assert.match(testCard, /新窗口打开预览/);
+  assert.match(archiveClick, /openIsolatedPreviewDocument\(iframe\.srcdoc, title\)/);
+  assert.doesNotMatch(source, /window\.open\('',\s*'_blank'\)|document\.write\(/);
 });
