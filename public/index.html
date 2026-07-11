@@ -430,12 +430,12 @@
     </div>
   </div>
 
-  <div class="overlay" id="modal-detail" role="dialog" aria-modal="true">
-    <div class="modal wide">
+  <div class="overlay" id="modal-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <div class="modal wide contribution-detail-modal">
       <h2 id="detail-title">贡献详情</h2>
       <p class="hint" id="detail-meta"></p>
       <pre id="detail-prompt" style="white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:12px;max-height:120px;overflow:auto"></pre>
-      <div class="compare" id="detail-compare" style="padding:12px 0 0;max-height:50dvh"></div>
+      <div class="compare" id="detail-compare"></div>
       <div class="modal-actions">
         <button type="button" class="ghost-btn danger-btn hidden" id="btn-delete-contribution">删除此贡献</button>
         <button type="button" class="ghost-btn" data-close="modal-detail">关闭</button>
@@ -482,7 +482,7 @@
     </div>
   </div>
 
-  <div class="overlay" id="modal-preview-fs" role="dialog" aria-modal="true">
+  <div class="overlay" id="modal-preview-fs" role="dialog" aria-modal="true" aria-labelledby="fs-title">
     <div class="modal fs-modal">
       <div class="fs-bar">
         <strong id="fs-title">预览</strong>
