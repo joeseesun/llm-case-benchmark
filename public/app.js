@@ -56,7 +56,8 @@
   };
   let runTicker = null;
   const modalReturnFocus = new Map();
-  const renderQueued = { case: false, test: false };
+  const renderQueued = { case: new Set(), test: new Set() };
+  const testRunTokens = new Map();
 
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -89,8 +90,12 @@
   function startRunTicker() {
     if (runTicker) return;
     runTicker = setInterval(() => {
-      if (hasRunningRows(state.results)) renderCompare();
-      if (hasRunningRows(state.testResults)) renderTestCompare();
+      Object.entries(state.results).forEach(([slotKey, row]) => {
+        if (row?.status === 'running') queueResultRender('case', slotKey);
+      });
+      Object.entries(state.testResults).forEach(([slotKey, row]) => {
+        if (row?.status === 'running') queueResultRender('test', slotKey);
+      });
       if (!hasRunningRows(state.results) && !hasRunningRows(state.testResults)) {
         clearInterval(runTicker);
         runTicker = null;
@@ -98,13 +103,13 @@
     }, 1000);
   }
 
-  function queueResultRender(source) {
-    if (renderQueued[source]) return;
-    renderQueued[source] = true;
+  function queueResultRender(source, slotKey) {
+    const queued = renderQueued[source];
+    if (!queued || !slotKey || queued.has(slotKey)) return;
+    queued.add(slotKey);
     requestAnimationFrame(() => {
-      renderQueued[source] = false;
-      if (source === 'test') renderTestCompare();
-      else renderCompare();
+      queued.delete(slotKey);
+      updateResultCard(slotKey, source);
     });
   }
 
@@ -461,6 +466,11 @@
     return null;
   }
 
+  function testResultOutputType(row) {
+    if (row?.outputType === 'html' || row?.outputType === 'text') return row.outputType;
+    return state.testOutputType;
+  }
+
   function renderTabs({ slotKey, source, artifact, mode, running }) {
     const viewAttr = source === 'test' ? 'data-test-view' : 'data-view';
     const rerunAttr = source === 'test' ? 'data-test-rerun' : 'data-rerun';
@@ -559,19 +569,35 @@
     if (!r?.content) return;
     const content = r.content;
     const outputType = isTest
-      ? state.testOutputType
+      ? testResultOutputType(r)
       : isPublished
         ? (r.outputType === 'html' ? 'html' : state.publishedRun?.outputType || 'text')
         : caseOutputType(c);
     const artifact = renderableArtifact(content, outputType);
     $('#fs-title').textContent = m ? m.label : '预览';
     const body = $('#fs-body');
+    let initialFocus = null;
     if (artifact) {
-      body.innerHTML = `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="fullscreen"></iframe>`;
+      body.innerHTML = `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="fullscreen" tabindex="0"></iframe>`;
+      initialFocus = body.querySelector('iframe');
     } else {
-      body.innerHTML = `<div class="col-body md" style="padding:20px;overflow:auto;height:100%;background:var(--surface);color:var(--text)">${renderMarkdown(content)}</div>`;
+      body.innerHTML = `<div class="col-body md" tabindex="0" style="padding:20px;overflow:auto;height:100%;background:var(--surface);color:var(--text)">${renderMarkdown(content)}</div>`;
+      initialFocus = body.firstElementChild;
     }
-    openModal('modal-preview-fs');
+    openModal('modal-preview-fs', initialFocus);
+    if (initialFocus?.tagName === 'IFRAME') {
+      initialFocus.addEventListener('load', () => {
+        const overlay = $('#modal-preview-fs');
+        const active = document.activeElement;
+        const trigger = modalReturnFocus.get('modal-preview-fs');
+        if (
+          overlay?.classList.contains('open') &&
+          (active === initialFocus || active === document.body || active === overlay || active === trigger)
+        ) {
+          initialFocus.focus({ preventScroll: true });
+        }
+      }, { once: true });
+    }
   }
 
   function setUrlCase(id) {
@@ -703,6 +729,20 @@
       button.classList.remove('loading');
     }
     updateResultActions();
+  }
+
+  function beginTestSlotRun(slotKey) {
+    const token = `${slotKey}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    testRunTokens.set(slotKey, token);
+    return token;
+  }
+
+  function isCurrentTestSlotRun(slotKey, token) {
+    return !!token && testRunTokens.get(slotKey) === token;
+  }
+
+  function finishTestSlotRun(slotKey, token) {
+    if (isCurrentTestSlotRun(slotKey, token)) testRunTokens.delete(slotKey);
   }
 
   function displaySlots() {
@@ -1063,6 +1103,119 @@
       </div>`;
   }
 
+  function renderCaseResultCard(m, { c, published, outputType }) {
+    const r = state.results[m.key];
+    const mode = state.viewModes[m.key] || 'preview';
+    let body = '<div class="col-body empty">等待运行…</div>';
+    let stats = '—';
+    let tabs = '';
+    if (r?.status === 'running') {
+      body = renderRunningBody(r, outputType);
+      stats = runningStats(r);
+    } else if (r?.status === 'error') {
+      body = renderErrorBody(r);
+      stats = r.latencyMs != null ? `${r.latencyMs} ms` : 'error';
+    } else if (r?.status === 'ok') {
+      const content = r.content || '';
+      const resultOutputType = published ? outputType : (r.outputType === 'html' ? 'html' : outputType);
+      const surface = renderResultSurface({
+        slotKey: m.key,
+        source: published ? 'published' : 'case',
+        content,
+        outputType: resultOutputType,
+        mode,
+        running: false,
+      });
+      tabs = surface.tabs;
+      body = surface.body;
+      const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
+      stats = r.latencyMs != null ? `${r.latencyMs} ms${tok}` : `—${tok}`;
+    }
+    return `
+      <article class="col ${published ? 'published-col' : ''} ${outputType === 'html' ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
+        <div class="col-head">
+          <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
+          <div class="stats">${escapeHtml(stats)}</div>
+        </div>
+        ${tabs}
+        ${body}
+        ${!published && r?.status === 'ok' && state.scoreOpen.has(m.key) ? scoreControls(m.key, c?.rubric) : ''}
+        ${r?.status === 'ok' ? `<div class="col-actions">
+          ${iconAction({ attr: 'data-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
+          ${iconAction({ attr: 'data-fs', key: m.key, iconName: 'maximize', label: '全屏查看' })}
+          ${iconAction({ attr: 'data-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
+          ${published ? '' : `<button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>`}
+        </div>` : ''}
+      </article>`;
+  }
+
+  function renderTestResultCard(m) {
+    const r = state.testResults[m.key];
+    const outputType = testResultOutputType(r);
+    const mode = state.testViewModes[m.key] || 'md';
+    let body = '<div class="col-body empty">等待运行…</div>';
+    let stats = '—';
+    let tabs = '';
+    if (r?.status === 'running') {
+      body = renderRunningBody(r, outputType);
+      stats = runningStats(r);
+    } else if (r?.status === 'error') {
+      body = renderErrorBody(r);
+      stats = r.latencyMs != null ? `${r.latencyMs}ms` : 'error';
+    } else if (r?.status === 'ok') {
+      const surface = renderResultSurface({
+        slotKey: m.key,
+        source: 'test',
+        content: r.content || '',
+        outputType,
+        mode,
+        running: false,
+      });
+      tabs = surface.tabs;
+      body = surface.body;
+      const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
+      stats = `${r.latencyMs ?? '—'}ms${tok}`;
+    }
+    return `
+      <article class="col" data-slot="${escapeHtml(m.key)}">
+        <div class="col-head">
+          <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
+          <div class="stats">${escapeHtml(stats)}</div>
+        </div>
+        ${tabs}
+        ${body}
+        ${r?.status === 'ok' ? `<div class="col-actions">
+          ${iconAction({ attr: 'data-test-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
+          ${iconAction({ attr: 'data-test-fs', key: m.key, iconName: 'maximize', label: '全屏查看' })}
+          ${iconAction({ attr: 'data-test-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
+        </div>` : ''}
+      </article>`;
+  }
+
+  function findResultCard(box, slotKey) {
+    return [...(box?.querySelectorAll('article.col[data-slot]') || [])]
+      .find((card) => card.dataset.slot === slotKey);
+  }
+
+  function updateResultCard(slotKey, source = 'case') {
+    if (source === 'test') {
+      const box = $('#test-compare');
+      const card = findResultCard(box, slotKey);
+      const slot = configuredSlots({ selectedSiteOnly: false })
+        .find((item) => item.key === slotKey && state.testSelectedKeys.has(item.key));
+      if (card && slot) card.outerHTML = renderTestResultCard(slot);
+      return;
+    }
+    const box = $('#compare');
+    const card = findResultCard(box, slotKey);
+    const slot = displaySlots().find((item) => item.key === slotKey);
+    const c = activeCase();
+    const published = state.resultOrigin === 'published';
+    if (!card || !slot || !c || (source === 'published') !== published) return;
+    const outputType = published ? (state.publishedRun?.outputType || caseOutputType(c)) : caseOutputType(c);
+    card.outerHTML = renderCaseResultCard(slot, { c, published, outputType });
+  }
+
   function renderCompare() {
     const c = activeCase();
     const box = $('#compare');
@@ -1100,52 +1253,7 @@
       return;
     }
     box.innerHTML = slots
-      .map((m) => {
-        const r = state.results[m.key];
-        const mode = state.viewModes[m.key] || 'preview';
-        let body = '<div class="col-body empty">等待运行…</div>';
-        let stats = '—';
-        let tabs = '';
-        if (r?.status === 'running') {
-          body = renderRunningBody(r, outputType);
-          stats = runningStats(r);
-        } else if (r?.status === 'error') {
-          body = renderErrorBody(r);
-          stats = r.latencyMs != null ? `${r.latencyMs} ms` : 'error';
-        } else if (r?.status === 'ok') {
-          const content = r.content || '';
-          const resultOutputType = published ? outputType : (r.outputType === 'html' ? 'html' : outputType);
-          const surface = renderResultSurface({
-            slotKey: m.key,
-            source: published ? 'published' : 'case',
-            content,
-            outputType: resultOutputType,
-            mode,
-            running: state.results[m.key]?.status === 'running',
-          });
-          tabs = surface.tabs;
-          body = surface.body;
-          const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
-          stats = r.latencyMs != null ? `${r.latencyMs} ms${tok}` : `—${tok}`;
-        }
-        const showFs = r?.status === 'ok';
-        return `
-          <article class="col ${published ? 'published-col' : ''} ${outputType === 'html' ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
-            <div class="col-head">
-              <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
-              <div class="stats">${escapeHtml(stats)}</div>
-            </div>
-            ${tabs}
-            ${body}
-            ${!published && r?.status === 'ok' && state.scoreOpen.has(m.key) ? scoreControls(m.key, c?.rubric) : ''}
-            ${r?.status === 'ok' ? `<div class="col-actions">
-              ${iconAction({ attr: 'data-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
-              ${showFs ? iconAction({ attr: 'data-fs', key: m.key, iconName: 'maximize', label: '全屏查看' }) : ''}
-              ${iconAction({ attr: 'data-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
-              ${published ? '' : `<button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>`}
-            </div>` : ''}
-          </article>`;
-      })
+      .map((m) => renderCaseResultCard(m, { c, published, outputType }))
       .join('');
   }
 
@@ -1506,14 +1614,14 @@
             if (!isCurrentCaseRun(runToken, c.id)) return;
             runResults[m.key] = { ...runResults[m.key], status: 'running', ...patch };
             state.results = runResults;
-            queueResultRender('case');
+            queueResultRender('case', m.key);
           },
         });
         if (!isCurrentCaseRun(runToken, c.id)) return;
         runResults[m.key] = result;
         state.results = runResults;
         renderSnapshotMeta();
-        renderCompare();
+        queueResultRender('case', m.key);
         updateResultActions();
       })
     );
@@ -1568,6 +1676,7 @@
     let outputType = 'text';
     let caseId = '';
     let caseRunToken = '';
+    let testRunToken = '';
     let caseResults = null;
     let effectiveSlot = null;
     if (isTest) {
@@ -1578,10 +1687,16 @@
         toast('请先输入提示词');
         return;
       }
-      state.testResults[slotKey] = { status: 'running', content: '', startedAt: Date.now() };
+      testRunToken = beginTestSlotRun(slotKey);
+      state.testResults[slotKey] = {
+        status: 'running',
+        content: '',
+        outputType,
+        startedAt: Date.now(),
+      };
       startRunTicker();
       $('#test-run-status').textContent = `正在重新运行 ${slot.label}…`;
-      renderTestCompare();
+      queueResultRender('test', slotKey);
     } else {
       const c = activeCase();
       if (!c) return;
@@ -1625,7 +1740,11 @@
       startRunTicker();
       $('#run-status').textContent = `正在重新运行 ${slot.label}…`;
       renderSnapshotMeta();
-      renderCompare();
+      if (sameContext && findResultCard($('#compare'), slotKey)) {
+        queueResultRender('case', slotKey);
+      } else {
+        renderCompare();
+      }
     }
 
     const result = await requestSlotRun(slot, {
@@ -1634,22 +1753,28 @@
       outputType,
       onUpdate: (patch) => {
         if (isTest) {
+          if (!isCurrentTestSlotRun(slotKey, testRunToken)) return;
           state.testResults[slotKey] = { ...state.testResults[slotKey], status: 'running', ...patch };
-          queueResultRender('test');
+          queueResultRender('test', slotKey);
         } else if (isCurrentCaseRun(caseRunToken, caseId)) {
           caseResults[slotKey] = { ...caseResults[slotKey], status: 'running', ...patch };
           state.results = caseResults;
-          queueResultRender('case');
+          queueResultRender('case', slotKey);
         }
       },
     });
     let history = { ok: false, skipped: true };
     if (isTest) {
-      state.testResults[slotKey] = result;
-      renderTestCompare();
+      if (!isCurrentTestSlotRun(slotKey, testRunToken)) return;
+      state.testResults[slotKey] = { ...result, outputType };
+      finishTestSlotRun(slotKey, testRunToken);
+      queueResultRender('test', slotKey);
       const ok = Object.values(state.testResults).filter((r) => r.status === 'ok').length;
       const fail = Object.values(state.testResults).filter((r) => r.status === 'error').length;
-      $('#test-run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
+      const running = Object.values(state.testResults).filter((r) => r.status === 'running').length;
+      $('#test-run-status').textContent = running
+        ? `${ok} 成功 · ${running} 运行中${fail ? ` · ${fail} 失败` : ''}`
+        : `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
     } else {
       if (!isCurrentCaseRun(caseRunToken, caseId)) return;
       caseResults[slotKey] = result;
@@ -1660,7 +1785,7 @@
       runButton.disabled = false;
       runButton.classList.remove('loading');
       renderSnapshotMeta();
-      renderCompare();
+      queueResultRender('case', slotKey);
       const ok = Object.values(caseResults).filter((r) => r.status === 'ok').length;
       const fail = Object.values(caseResults).filter((r) => r.status === 'error').length;
       $('#run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
@@ -1684,14 +1809,16 @@
     );
   }
 
-  function openModal(id) {
+  function openModal(id, initialFocus = null) {
     const overlay = $(`#${id}`);
     if (!overlay) return;
     modalReturnFocus.set(id, document.activeElement);
     overlay.classList.add('open');
     requestAnimationFrame(() => {
-      const preferred = overlay.querySelector('[autofocus], input:not([type="hidden"]), textarea, select, button, a[href]');
-      preferred?.focus();
+      const preferred = initialFocus && overlay.contains(initialFocus)
+        ? initialFocus
+        : overlay.querySelector('[autofocus], input:not([type="hidden"]), textarea, select, button, a[href]');
+      preferred?.focus({ preventScroll: true });
     });
   }
   function closeModal(id) {
@@ -2294,49 +2421,7 @@
       return;
     }
     box.innerHTML = slots
-      .map((m) => {
-        const r = state.testResults[m.key];
-        const mode = state.testViewModes[m.key] || 'md';
-        let body = '<div class="col-body empty">等待运行…</div>';
-        let stats = '—';
-        let tabs = '';
-        if (r?.status === 'running') {
-          body = renderRunningBody(r, state.testOutputType);
-          stats = runningStats(r);
-        } else if (r?.status === 'error') {
-          body = renderErrorBody(r);
-          stats = r.latencyMs != null ? `${r.latencyMs}ms` : 'error';
-        } else if (r?.status === 'ok') {
-          const content = r.content || '';
-          const surface = renderResultSurface({
-            slotKey: m.key,
-            source: 'test',
-            content,
-            outputType: state.testOutputType,
-            mode,
-            running: state.testResults[m.key]?.status === 'running',
-          });
-          tabs = surface.tabs;
-          body = surface.body;
-          const tok = r.usage?.totalTokens != null ? ` · ${r.usage.totalTokens} tok` : '';
-          stats = `${r.latencyMs ?? '—'}ms${tok}`;
-        }
-        const showFs = r?.status === 'ok';
-        return `
-          <article class="col" data-slot="${escapeHtml(m.key)}">
-            <div class="col-head">
-              <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
-              <div class="stats">${escapeHtml(stats)}</div>
-            </div>
-            ${tabs}
-            ${body}
-            ${r?.status === 'ok' ? `<div class="col-actions">
-              ${iconAction({ attr: 'data-test-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
-              ${showFs ? iconAction({ attr: 'data-test-fs', key: m.key, iconName: 'maximize', label: '全屏查看' }) : ''}
-              ${iconAction({ attr: 'data-test-raw', key: m.key, iconName: 'external', label: '新窗口打开原文' })}
-            </div>` : ''}
-          </article>`;
-      })
+      .map((m) => renderTestResultCard(m))
       .join('');
   }
 
@@ -2348,6 +2433,7 @@
       return;
     }
     state.testOutputType = $('#test-output-type').value === 'html' ? 'html' : 'text';
+    const outputType = state.testOutputType;
     const slots = testSlots();
     if (!configuredSlots({ selectedSiteOnly: false }).length) {
       toast('请先配置可用模型');
@@ -2359,9 +2445,15 @@
       return;
     }
     state.testRunning = true;
+    testRunTokens.clear();
     state.testResults = {};
     slots.forEach((m) => {
-      state.testResults[m.key] = { status: 'running', content: '', startedAt: Date.now() };
+      state.testResults[m.key] = {
+        status: 'running',
+        content: '',
+        outputType,
+        startedAt: Date.now(),
+      };
     });
     startRunTicker();
     updateResultActions();
@@ -2374,15 +2466,20 @@
 
     await Promise.all(
       slots.map(async (m) => {
-        state.testResults[m.key] = await requestSlotRun(m, {
+        const testRunToken = beginTestSlotRun(m.key);
+        const result = await requestSlotRun(m, {
           prompt,
-          outputType: state.testOutputType,
+          outputType,
           onUpdate: (patch) => {
+            if (!isCurrentTestSlotRun(m.key, testRunToken)) return;
             state.testResults[m.key] = { ...state.testResults[m.key], status: 'running', ...patch };
-            queueResultRender('test');
+            queueResultRender('test', m.key);
           },
         });
-        renderTestCompare();
+        if (!isCurrentTestSlotRun(m.key, testRunToken)) return;
+        state.testResults[m.key] = { ...result, outputType };
+        finishTestSlotRun(m.key, testRunToken);
+        queueResultRender('test', m.key);
         updateResultActions();
       })
     );
@@ -2393,7 +2490,10 @@
     btn.textContent = '运行提示词';
     const ok = Object.values(state.testResults).filter((r) => r.status === 'ok').length;
     const fail = Object.values(state.testResults).filter((r) => r.status === 'error').length;
-    $('#test-run-status').textContent = `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
+    const running = Object.values(state.testResults).filter((r) => r.status === 'running').length;
+    $('#test-run-status').textContent = running
+      ? `${ok} 成功 · ${running} 运行中${fail ? ` · ${fail} 失败` : ''}`
+      : `完成：${ok} 成功${fail ? ` · ${fail} 失败` : ''}`;
     updateResultActions();
     toast(ok ? `对比完成，${ok} 个模型有结果` : '全部失败，请检查模型配置');
   }
@@ -2409,7 +2509,7 @@
           label: slot?.label || r.label || r.model || key,
           content: r.content || '',
           latencyMs: r.latencyMs,
-          outputType: state.testOutputType === 'html' ? 'html' : 'text',
+          outputType: testResultOutputType(r),
         };
       });
   }
@@ -2623,7 +2723,7 @@
       body: JSON.stringify({
         caseId: isTest ? `custom-${Date.now().toString(36)}` : c.id,
         caseTitle: title,
-        category: isTest ? (state.testOutputType === 'html' ? 'frontend' : 'custom') : c.category,
+        category: isTest ? (results.some((r) => r.outputType === 'html') ? 'frontend' : 'custom') : c.category,
         prompt,
         author: $('#contrib-author').value.trim() || '匿名贡献者',
         note: $('#contrib-note').value.trim(),
@@ -2678,7 +2778,7 @@
       source,
       content: row.content || '',
       outputType: isTest
-        ? state.testOutputType
+        ? testResultOutputType(row)
         : isPublished
           ? (row.outputType === 'html' ? 'html' : state.publishedRun?.outputType || 'text')
           : caseOutputType(activeCase()),
