@@ -16,6 +16,7 @@
   --shadow: 0 2px 4px rgba(15, 55, 50, 0.04), 0 0 0 1px rgba(15, 118, 110, 0.05);
   --dialog-shadow: 0 20px 60px rgba(15, 55, 50, 0.18), 0 0 0 1px rgba(15, 118, 110, 0.08);
   --rail: 260px;
+  --topbar-height: 57px;
   --result-card-max-height: clamp(520px, 72dvh, 760px);
   --ease: cubic-bezier(0.23, 1, 0.32, 1);
   --font-ui: "Sora", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
@@ -175,7 +176,7 @@ a:hover { text-decoration: underline; }
   max-height: calc(100dvh - 57px);
 }
 
-.rail-head { padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 8px; }
+.rail-head { padding: 12px 12px 8px; display: flex; flex: 0 0 auto; flex-direction: column; gap: 8px; }
 .rail-head .label,
 .label {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
@@ -199,8 +200,24 @@ a:hover { text-decoration: underline; }
 }
 
 .case-list {
-  overflow: auto; padding: 4px 8px 16px; display: flex; flex-direction: column; gap: 4px;
+  flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px 8px 16px;
+  display: flex; flex-direction: column; gap: 4px;
+  overscroll-behavior-y: contain; scrollbar-gutter: stable;
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+}
+
+@media (min-width: 901px) {
+  .rail {
+    position: fixed;
+    top: var(--topbar-height);
+    left: 0;
+    width: var(--rail);
+    height: calc(100dvh - var(--topbar-height));
+    max-height: none;
+    overflow: hidden;
+    z-index: 10;
+  }
+  .stage { grid-column: 2; }
 }
 
 .case-item {

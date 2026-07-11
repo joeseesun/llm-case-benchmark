@@ -150,6 +150,44 @@ test('late-selected free-compare models expose a first-run action', () => {
   assert.match(rerun, /isFirstTestRun \? '已生成' : '已重新生成'/);
 });
 
+test('free compare initially selects every user-added model with a site-model fallback', () => {
+  const selection = functionBody('syncTestSelection');
+  assert.match(selection, /if \(!state\.testSelectionTouched\)/);
+  assert.match(selection, /slots\.filter\(\(m\) => m\.keySource === 'browser'\)/);
+  assert.match(selection, /browserSlots\.length \? browserSlots : slots/);
+  assert.match(selection, /defaultSlots\.forEach\(\(m\) => state\.testSelectedKeys\.add\(m\.key\)\)/);
+  assert.doesNotMatch(selection, /slice\(/);
+  assert.doesNotMatch(selection, /!state\.testSelectedKeys\.size/);
+});
+
+test('desktop case rail stays viewport-height and isolates its scroll chain', () => {
+  const caseList = functionBody('renderCaseList');
+  const topbarObserver = functionBody('observeTopbarHeight');
+  assert.match(stylesSource, /--topbar-height:\s*57px/);
+  assert.match(stylesSource, /@media \(min-width:\s*901px\)[\s\S]*?\.rail\s*\{[\s\S]*?position:\s*fixed/);
+  assert.match(stylesSource, /top:\s*var\(--topbar-height\)/);
+  assert.match(stylesSource, /width:\s*var\(--rail\)/);
+  assert.match(stylesSource, /height:\s*calc\(100dvh - var\(--topbar-height\)\)/);
+  assert.match(stylesSource, /@media \(min-width:\s*901px\)[\s\S]*?\.stage\s*\{\s*grid-column:\s*2/);
+  assert.match(stylesSource, /\.case-list\s*\{[\s\S]*?flex:\s*1 1 auto/);
+  assert.match(stylesSource, /\.case-list\s*\{[\s\S]*?min-height:\s*0/);
+  assert.match(stylesSource, /\.case-list\s*\{[\s\S]*?overscroll-behavior-y:\s*contain/);
+  assert.match(topbarObserver, /new ResizeObserver\(syncTopbarHeight\)/);
+  assert.match(topbarObserver, /observe\(topbar\)/);
+  assert.match(functionBody('init'), /observeTopbarHeight\(\)/);
+  assert.match(caseList, /matchMedia\('\(min-width: 901px\)'\)\.matches/);
+  assert.match(caseList, /case-item\.active.*scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/s);
+});
+
+test('community gallery uses the public name 网友测试分享', () => {
+  assert.match(indexSource, /id="tab-gallery"[^>]*>网友测试分享<\/a>/);
+  assert.match(indexSource, /id="view-gallery"[\s\S]*?<h2>网友测试分享<\/h2>/);
+  assert.doesNotMatch(indexSource, />贡献墙</);
+  assert.doesNotMatch(source, /贡献墙/);
+  assert.doesNotMatch(indexSource, /贡献详情|确认贡献|删除此贡献/);
+  assert.doesNotMatch(source, /删除这条贡献|删除贡献|贡献已删除|贡献失败/);
+});
+
 test('result cards bound long output without truncating the generated content', () => {
   const cardRule = /\n\.col\s*\{([^}]*)\}/.exec(stylesSource)?.[1] || '';
   const bodyRule = /\n\.col-body\s*\{([^}]*)\}/.exec(stylesSource)?.[1] || '';

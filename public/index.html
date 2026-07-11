@@ -26,7 +26,7 @@
       <div class="top-actions">
         <a class="tab-btn" id="tab-cases" href="/" aria-selected="true">实测题库</a>
         <a class="tab-btn" id="tab-test" href="/compare" aria-selected="false">自由对比</a>
-        <a class="tab-btn" id="tab-gallery" href="/gallery" aria-selected="false">贡献墙</a>
+        <a class="tab-btn" id="tab-gallery" href="/gallery" aria-selected="false">网友测试分享</a>
         <a class="tab-btn" id="tab-history" href="/history" aria-selected="false">测试记录</a>
         <a class="tab-btn" id="tab-submit" href="/submit" aria-selected="false">提交题目</a>
         <button type="button" class="ghost-btn" id="btn-settings">模型设置</button>
@@ -107,7 +107,7 @@
           <div class="actions">
             <button type="button" class="ghost-btn hidden" id="btn-view-published">返回精选结果</button>
             <button type="button" class="ghost-btn result-action hidden" id="btn-export">导出结果</button>
-            <button type="button" class="ghost-btn result-action hidden" id="btn-contribute">贡献本次结果</button>
+            <button type="button" class="ghost-btn result-action hidden" id="btn-contribute">分享本次结果</button>
             <button type="button" class="ghost-btn" id="btn-run">用本题复跑</button>
             <button type="button" class="primary-btn hidden" id="btn-publish">发布为题库结果</button>
           </div>
@@ -171,7 +171,7 @@
         <div class="hint" id="test-run-status">选择模型后运行</div>
         <div class="actions">
           <button type="button" class="ghost-btn test-result-action hidden" id="btn-test-export">导出结果</button>
-          <button type="button" class="ghost-btn test-result-action hidden" id="btn-test-contribute">贡献本次结果</button>
+          <button type="button" class="ghost-btn test-result-action hidden" id="btn-test-contribute">分享本次结果</button>
         </div>
       </div>
       <div class="compare" id="test-compare"></div>
@@ -180,9 +180,9 @@
     <div class="board hidden" id="view-gallery">
       <div class="board-head page-heading">
         <div>
-          <div class="label">Community</div>
-          <h2>贡献墙</h2>
-          <p>查看大家贡献的多模型对比结果。</p>
+          <div class="label">Shared tests</div>
+          <h2>网友测试分享</h2>
+          <p>查看网友分享的多模型同题测试结果。</p>
         </div>
         <button type="button" class="ghost-btn" id="btn-refresh-gallery">刷新</button>
       </div>
@@ -367,11 +367,11 @@
 
   <div class="overlay" id="modal-contribute" role="dialog" aria-modal="true">
     <div class="modal">
-      <h2>贡献本次结果</h2>
-      <p class="hint">上传提示词与输出到贡献墙，不会上传 API Key。</p>
+      <h2>分享本次结果</h2>
+      <p class="hint">上传提示词与模型输出到「网友测试分享」，不会上传 API Key。</p>
       <div class="field">
         <label for="contrib-author">署名</label>
-        <input id="contrib-author" maxlength="40" placeholder="匿名贡献者" />
+        <input id="contrib-author" maxlength="40" placeholder="匿名网友" />
       </div>
       <div class="field">
         <label for="contrib-note">备注</label>
@@ -379,7 +379,7 @@
       </div>
       <div class="modal-actions">
         <button type="button" class="ghost-btn" data-close="modal-contribute">取消</button>
-        <button type="button" class="primary-btn" id="btn-submit-contrib">确认贡献</button>
+        <button type="button" class="primary-btn" id="btn-submit-contrib">确认分享</button>
       </div>
     </div>
   </div>
@@ -432,12 +432,12 @@
 
   <div class="overlay" id="modal-detail" role="dialog" aria-modal="true" aria-labelledby="detail-title">
     <div class="modal wide contribution-detail-modal">
-      <h2 id="detail-title">贡献详情</h2>
+      <h2 id="detail-title">分享详情</h2>
       <p class="hint" id="detail-meta"></p>
       <pre id="detail-prompt" style="white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;font-size:12px;max-height:120px;overflow:auto"></pre>
       <div class="compare" id="detail-compare"></div>
       <div class="modal-actions">
-        <button type="button" class="ghost-btn danger-btn hidden" id="btn-delete-contribution">删除此贡献</button>
+        <button type="button" class="ghost-btn danger-btn hidden" id="btn-delete-contribution">删除此分享</button>
         <button type="button" class="ghost-btn" data-close="modal-detail">关闭</button>
       </div>
     </div>
