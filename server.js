@@ -2,9 +2,12 @@
 
 const path = require('path');
 const crypto = require('crypto');
+const dns = require('node:dns').promises;
+const net = require('node:net');
 const express = require('express');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
+const { Agent, fetch: undiciFetch } = require('undici');
 const db = require('./lib/db');
 const { enrichCaseFromPrompt } = require('./lib/enrich');
 
@@ -13,6 +16,40 @@ const HOST = process.env.HOST || '127.0.0.1';
 const ROOT = __dirname;
 const COOKIE_NAME = 'cb_admin';
 const IS_PROD = process.env.NODE_ENV === 'production';
+const configuredRunLimit = Number(process.env.BENCHMARK_RUN_LIMIT_PER_HOUR || 60);
+const RUN_LIMIT_PER_HOUR = Number.isFinite(configuredRunLimit) && configuredRunLimit > 0
+  ? Math.floor(configuredRunLimit)
+  : 60;
+const configuredCustomConcurrency = Number(process.env.BENCHMARK_CUSTOM_RUN_CONCURRENCY || 32);
+const CUSTOM_RUN_CONCURRENCY = Number.isFinite(configuredCustomConcurrency) && configuredCustomConcurrency > 0
+  ? Math.floor(configuredCustomConcurrency)
+  : 32;
+const customRunConcurrency = new Map();
+const privateNetworkBlockList = new net.BlockList();
+[
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+].forEach(([address, prefix]) => privateNetworkBlockList.addSubnet(address, prefix, 'ipv4'));
+[
+  ['::', 128],
+  ['::1', 128],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['ff00::', 8],
+  ['2001:db8::', 32],
+].forEach(([address, prefix]) => privateNetworkBlockList.addSubnet(address, prefix, 'ipv6'));
 const FINAL_ONLY_RETRY_SYSTEM =
   '你上一轮只返回了推理过程，没有返回最终正文。现在必须跳过分析和推理，直接输出最终答案。不要解释、不要 Markdown 代码围栏、不要输出思考过程；如果任务要求 HTML/SVG，请只输出可直接预览的完整 HTML 或 SVG。';
 const HTML_OUTPUT_SYSTEM =
@@ -47,6 +84,128 @@ function requireAdmin(req, res, next) {
     return;
   }
   next();
+}
+
+function isAdminRequest(req) {
+  return db.isValidSession(req.cookies[COOKIE_NAME]);
+}
+
+function consumeRunQuota(req, res, target) {
+  if (target?.source !== 'site') {
+    res.setHeader('X-RateLimit-Policy', 'caller-key-exempt');
+    return true;
+  }
+  if (isAdminRequest(req)) {
+    res.setHeader('X-RateLimit-Policy', 'admin-exempt');
+    return true;
+  }
+  const rl = db.rateLimit(`run:${ipHash(req)}`, RUN_LIMIT_PER_HOUR, 60 * 60 * 1000);
+  res.setHeader('X-RateLimit-Limit', String(RUN_LIMIT_PER_HOUR));
+  res.setHeader('X-RateLimit-Remaining', String(Math.max(0, rl.remaining || 0)));
+  if (rl.ok) return true;
+
+  const retryAfterSeconds = Math.max(1, Math.ceil((rl.retryAfterMs || 0) / 1000));
+  const retryAfterMinutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
+  res.setHeader('Retry-After', String(retryAfterSeconds));
+  res.status(429).json({
+    error: `本站访客额度已用完：每个 IP 每小时最多调用 ${RUN_LIMIT_PER_HOUR} 次，每个模型计 1 次。约 ${retryAfterMinutes} 分钟后可重试；管理员登录后不受此限制。`,
+    code: 'site_rate_limit',
+    retryAfterMs: retryAfterSeconds * 1000,
+    limit: RUN_LIMIT_PER_HOUR,
+  });
+  return false;
+}
+
+function privateOrReservedAddress(address, family) {
+  const normalizedFamily = family === 6 || family === 'IPv6' ? 'ipv6' : 'ipv4';
+  if (normalizedFamily === 'ipv6' && String(address).toLowerCase().startsWith('::ffff:')) {
+    return privateNetworkBlockList.check(String(address).slice(7), 'ipv4');
+  }
+  return privateNetworkBlockList.check(address, normalizedFamily);
+}
+
+async function assertSafeCustomBaseUrl(baseUrl) {
+  let parsed;
+  try {
+    parsed = new URL(normalizeOpenAiBase(baseUrl));
+  } catch {
+    const err = new Error('Base URL 不是有效网址');
+    err.status = 400;
+    throw err;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    const err = new Error('Base URL 只支持 http:// 或 https://');
+    err.status = 400;
+    throw err;
+  }
+  if (!IS_PROD) return null;
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    const err = new Error('生产环境不允许访问本机或私网 Base URL');
+    err.status = 400;
+    throw err;
+  }
+  let addresses;
+  try {
+    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+  } catch {
+    const err = new Error('Base URL 域名无法解析');
+    err.status = 400;
+    throw err;
+  }
+  if (!addresses.length || addresses.some(({ address, family }) => privateOrReservedAddress(address, family))) {
+    const err = new Error('生产环境不允许访问本机、私网或保留地址');
+    err.status = 400;
+    throw err;
+  }
+  const pinnedAddresses = addresses.map(({ address, family }) => ({ address, family: Number(family) }));
+  return new Agent({
+    connect: {
+      lookup(_hostname, options, callback) {
+        if (options?.all) {
+          callback(null, pinnedAddresses);
+          return;
+        }
+        const preferred = pinnedAddresses.find((entry) => !options?.family || entry.family === options.family)
+          || pinnedAddresses[0];
+        callback(null, preferred.address, preferred.family);
+      },
+    },
+  });
+}
+
+async function closeDispatcher(dispatcher) {
+  if (!dispatcher) return;
+  try {
+    await dispatcher.close();
+  } catch {
+    dispatcher.destroy();
+  }
+}
+
+function acquireCustomRun(req, res, target) {
+  if (target?.source !== 'custom' || isAdminRequest(req)) return () => {};
+  const key = ipHash(req);
+  const current = customRunConcurrency.get(key) || 0;
+  if (current >= CUSTOM_RUN_CONCURRENCY) {
+    res.setHeader('Retry-After', '1');
+    res.status(429).json({
+      error: `自带 Key 同时最多运行 ${CUSTOM_RUN_CONCURRENCY} 个模型；请等待当前请求完成后再试。`,
+      code: 'caller_concurrency_limit',
+      retryAfterMs: 1000,
+    });
+    return null;
+  }
+  customRunConcurrency.set(key, current + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = (customRunConcurrency.get(key) || 1) - 1;
+    if (next > 0) customRunConcurrency.set(key, next);
+    else customRunConcurrency.delete(key);
+  };
 }
 
 function sanitizeText(s, max = 120000) {
@@ -269,14 +428,17 @@ async function callChatCompletions({
   disableThinking = false,
   retriedFinalOnly = false,
   omitTemperature = false,
+  dispatcher = null,
 }) {
   const key = assertUsableApiKey(apiKey);
   const endpoint = openAiEndpoint(baseUrl, 'chat/completions');
   const messages = buildMessages(system, prompt);
 
   const started = Date.now();
-  const r = await fetch(endpoint, {
+  const r = await undiciFetch(endpoint, {
     method: 'POST',
+    redirect: 'error',
+    dispatcher: dispatcher || undefined,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
@@ -314,6 +476,7 @@ async function callChatCompletions({
         disableThinking,
         retriedFinalOnly,
         omitTemperature: true,
+        dispatcher,
       });
     }
     const err = new Error(String(msg));
@@ -343,6 +506,7 @@ async function callChatCompletions({
         disableThinking,
         retriedFinalOnly: true,
         omitTemperature: true,
+        dispatcher,
       });
     }
     throw completionEmptyError({
@@ -372,6 +536,7 @@ async function callChatCompletionsStream(
     disableThinking = false,
     retriedFinalOnly = false,
     omitTemperature = false,
+    dispatcher = null,
   },
   onEvent
 ) {
@@ -379,8 +544,10 @@ async function callChatCompletionsStream(
   const endpoint = openAiEndpoint(baseUrl, 'chat/completions');
   const messages = buildMessages(system, prompt);
   const started = Date.now();
-  const r = await fetch(endpoint, {
+  const r = await undiciFetch(endpoint, {
     method: 'POST',
+    redirect: 'error',
+    dispatcher: dispatcher || undefined,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
@@ -426,6 +593,7 @@ async function callChatCompletionsStream(
           disableThinking,
           retriedFinalOnly,
           omitTemperature: true,
+          dispatcher,
         },
         onEvent
       );
@@ -478,6 +646,7 @@ async function callChatCompletionsStream(
             disableThinking,
             retriedFinalOnly: true,
             omitTemperature: true,
+            dispatcher,
           },
           onEvent
         );
@@ -564,6 +733,7 @@ async function callChatCompletionsStream(
           disableThinking,
           retriedFinalOnly: true,
           omitTemperature: true,
+          dispatcher,
         },
         onEvent
       );
@@ -579,12 +749,14 @@ async function callChatCompletionsStream(
   };
 }
 
-async function listRemoteModels({ baseUrl, apiKey }) {
+async function listRemoteModels({ baseUrl, apiKey, dispatcher = null }) {
   const key = assertUsableApiKey(apiKey);
   const endpoint = openAiEndpoint(baseUrl, 'models');
   const started = Date.now();
-  const r = await fetch(endpoint, {
+  const r = await undiciFetch(endpoint, {
     method: 'GET',
+    redirect: 'error',
+    dispatcher: dispatcher || undefined,
     headers: {
       Authorization: `Bearer ${key}`,
     },
@@ -884,14 +1056,22 @@ app.post('/api/list-models', async (req, res) => {
     res.status(400).json({ error: 'baseUrl、apiKey 必填' });
     return;
   }
+  let customDispatcher = null;
   try {
-    const out = await listRemoteModels({ baseUrl: body.baseUrl, apiKey: body.apiKey });
+    customDispatcher = await assertSafeCustomBaseUrl(body.baseUrl);
+    const out = await listRemoteModels({
+      baseUrl: body.baseUrl,
+      apiKey: body.apiKey,
+      dispatcher: customDispatcher,
+    });
     res.json(out);
   } catch (err) {
     res.status(err.status && err.status >= 400 && err.status < 600 ? err.status : 502).json({
       error: err.message || '拉取模型失败',
       latencyMs: err.latencyMs || null,
     });
+  } finally {
+    await closeDispatcher(customDispatcher);
   }
 });
 
@@ -1028,14 +1208,15 @@ app.post('/api/run', async (req, res) => {
     return;
   }
 
-  const rl = db.rateLimit(`run:${ipHash(req)}`, 60, 60 * 60 * 1000);
-  if (!rl.ok) {
-    res.status(429).json({ error: '调用过于频繁，请稍后再试' });
-    return;
-  }
-
+  let releaseCustomRun = () => {};
+  let customDispatcher = null;
   try {
     const target = resolveRunTarget(body);
+    if (!consumeRunQuota(req, res, target)) return;
+    const release = acquireCustomRun(req, res, target);
+    if (!release) return;
+    releaseCustomRun = release;
+    if (target.source === 'custom') customDispatcher = await assertSafeCustomBaseUrl(target.baseUrl);
     const disableThinking = shouldDisableThinking({
       baseUrl: target.baseUrl,
       model: target.model,
@@ -1050,6 +1231,7 @@ app.post('/api/run', async (req, res) => {
       temperature,
       maxTokens,
       disableThinking,
+      dispatcher: customDispatcher,
     });
     res.json({ ...out, source: target.source, label: target.label });
   } catch (err) {
@@ -1057,6 +1239,9 @@ app.post('/api/run', async (req, res) => {
       error: err.message || '上游请求失败',
       latencyMs: err.latencyMs || null,
     });
+  } finally {
+    await closeDispatcher(customDispatcher);
+    releaseCustomRun();
   }
 });
 
@@ -1073,16 +1258,19 @@ app.post('/api/run-stream', async (req, res) => {
     return;
   }
 
-  const rl = db.rateLimit(`run:${ipHash(req)}`, 60, 60 * 60 * 1000);
-  if (!rl.ok) {
-    res.status(429).json({ error: '调用过于频繁，请稍后再试' });
-    return;
-  }
-
   let target;
+  let releaseCustomRun = () => {};
+  let customDispatcher = null;
   try {
     target = resolveRunTarget(body);
+    if (!consumeRunQuota(req, res, target)) return;
+    const release = acquireCustomRun(req, res, target);
+    if (!release) return;
+    releaseCustomRun = release;
+    if (target.source === 'custom') customDispatcher = await assertSafeCustomBaseUrl(target.baseUrl);
   } catch (err) {
+    await closeDispatcher(customDispatcher);
+    releaseCustomRun();
     res.status(err.status && err.status >= 400 && err.status < 600 ? err.status : 400).json({
       error: err.message || '模型配置不可用',
     });
@@ -1112,6 +1300,7 @@ app.post('/api/run-stream', async (req, res) => {
         temperature,
         maxTokens,
         disableThinking,
+        dispatcher: customDispatcher,
       },
       (event) => writeRunEvent(res, event)
     );
@@ -1123,6 +1312,8 @@ app.post('/api/run-stream', async (req, res) => {
       latencyMs: err.latencyMs || null,
     });
   } finally {
+    await closeDispatcher(customDispatcher);
+    releaseCustomRun();
     res.end();
   }
 });
@@ -1323,7 +1514,18 @@ app.post('/api/admin/submissions/:id/review', requireAdmin, (req, res) => {
 });
 
 app.delete('/api/admin/contributions/:id', requireAdmin, (req, res) => {
-  db.deleteContribution(req.params.id);
+  if (!db.deleteContribution(req.params.id)) {
+    res.status(404).json({ error: '贡献记录不存在' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/run-history/:id', requireAdmin, (req, res) => {
+  if (!db.deleteRunHistory(req.params.id)) {
+    res.status(404).json({ error: '测试记录不存在' });
+    return;
+  }
   res.json({ ok: true });
 });
 
