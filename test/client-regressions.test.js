@@ -11,8 +11,10 @@ const serverSource = fs.readFileSync(path.resolve(__dirname, '../server.js'), 'u
 function functionBody(name) {
   const start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `${name} should exist`);
-  const next = source.indexOf('\n  function ', start + 10);
-  return source.slice(start, next === -1 ? source.length : next);
+  const tail = source.slice(start + 10);
+  const next = /\n  (?:async )?function [A-Za-z_$]/.exec(tail);
+  const end = next ? start + 10 + next.index : source.length;
+  return source.slice(start, end);
 }
 
 test('switching profiles refreshes the child-model list from that profile', () => {
@@ -85,10 +87,10 @@ test('administrator explicitly publishes a completed run', () => {
 test('text output is never upgraded into executable HTML by content sniffing', () => {
   const infer = functionBody('inferOutputTypeFromText');
   const renderable = functionBody('renderableArtifact');
-  const renderCompare = functionBody('renderCompare');
+  const renderCard = functionBody('renderCaseResultCard');
   assert.match(infer, /if \(explicit === 'html' \|\| explicit === 'text'\) return explicit/);
   assert.match(renderable, /if \(outputType !== 'html'\) return null/);
-  assert.match(renderCompare, /const resultOutputType = published \? outputType/);
+  assert.match(renderCard, /const resultOutputType = published \? outputType/);
   assert.doesNotMatch(source, /r\.outputType === 'html' \|\| looksLikeHtml/);
 });
 
@@ -113,6 +115,75 @@ test('public HTML previews use a narrow network allowlist', () => {
   assert.match(body, /script-src 'unsafe-inline' https:\/\/cdn\.jsdelivr\.net https:\/\/unpkg\.com/);
   assert.doesNotMatch(body, /img-src[^;]*https:/);
   assert.doesNotMatch(body, /script-src[^;]* https:;/);
+});
+
+test('fullscreen HTML previews receive keyboard focus without weakening isolation', () => {
+  const fullscreen = functionBody('openFullscreen');
+  const modal = functionBody('openModal');
+  assert.match(fullscreen, /<iframe[^>]*tabindex="0"[^>]*>/);
+  assert.match(fullscreen, /sandbox="allow-scripts"/);
+  assert.match(fullscreen, /referrerpolicy="no-referrer"/);
+  assert.doesNotMatch(fullscreen, /allow-same-origin|allow-popups|allow-modals|allow-forms/);
+  assert.match(fullscreen, /openModal\('modal-preview-fs',\s*[^)]+\)/);
+  assert.match(modal, /function openModal\(id,\s*initialFocus\s*=\s*null\)/);
+  assert.match(modal, /initialFocus\s*&&\s*overlay\.contains\(initialFocus\)[\s\S]*\?\s*initialFocus[\s\S]*:\s*overlay\.querySelector/);
+});
+
+test('running result updates stay local to their source and slot', () => {
+  const ticker = functionBody('startRunTicker');
+  const queue = functionBody('queueResultRender');
+  const updateCard = functionBody('updateResultCard');
+  const runAll = functionBody('runAll');
+  const rerun = functionBody('rerunSlot');
+  const runTest = functionBody('runPromptTest');
+
+  assert.match(queue, /function queueResultRender\(source,\s*slotKey\)/);
+  assert.match(queue, /renderQueued\[source\]/);
+  assert.match(queue, /queued\.has\(slotKey\)/);
+  assert.match(queue, /queued\.add\(slotKey\)/);
+  assert.match(queue, /queued\.delete\(slotKey\)/);
+  assert.match(queue, /updateResultCard\(slotKey,\s*source\)/);
+  assert.doesNotMatch(queue, /renderCompare\(|renderTestCompare\(/);
+  assert.equal((updateCard.match(/card\.outerHTML\s*=/g) || []).length, 2);
+  assert.doesNotMatch(updateCard, /box\.innerHTML\s*=|renderCompare\(|renderTestCompare\(/);
+  assert.doesNotMatch(ticker, /renderCompare\(|renderTestCompare\(/);
+  assert.match(ticker, /queueResultRender\('case',\s*slotKey\)/);
+  assert.match(ticker, /queueResultRender\('test',\s*slotKey\)/);
+
+  assert.match(runAll, /runResults\[m\.key\]\s*=\s*\{[^;]*\.\.\.patch[^;]*\};[\s\S]{0,160}queueResultRender\('case',\s*m\.key\)/);
+  assert.match(runAll, /runResults\[m\.key\]\s*=\s*result;[\s\S]{0,160}queueResultRender\('case',\s*m\.key\)/);
+  assert.doesNotMatch(runAll, /runResults\[m\.key\]\s*=\s*result;[\s\S]{0,160}renderCompare\(\)/);
+
+  assert.match(rerun, /state\.testResults\[slotKey\]\s*=\s*\{[^;]*\.\.\.patch[^;]*\};[\s\S]{0,120}queueResultRender\('test',\s*slotKey\)/);
+  assert.match(rerun, /caseResults\[slotKey\]\s*=\s*\{[^;]*\.\.\.patch[^;]*\};[\s\S]{0,160}queueResultRender\('case',\s*slotKey\)/);
+  assert.match(rerun, /state\.testResults\[slotKey\]\s*=\s*\{\s*\.\.\.result,\s*outputType\s*\};[\s\S]{0,160}queueResultRender\('test',\s*slotKey\)/);
+  assert.match(rerun, /caseResults\[slotKey\]\s*=\s*result;[\s\S]{0,360}queueResultRender\('case',\s*slotKey\)/);
+  assert.doesNotMatch(rerun, /state\.testResults\[slotKey\]\s*=\s*result;[\s\S]{0,160}renderTestCompare\(\)/);
+  assert.doesNotMatch(rerun, /caseResults\[slotKey\]\s*=\s*result;[\s\S]{0,260}renderCompare\(\)/);
+
+  assert.match(runTest, /state\.testResults\[m\.key\]\s*=\s*\{[^;]*\.\.\.patch[^;]*\};[\s\S]{0,120}queueResultRender\('test',\s*m\.key\)/);
+  assert.match(runTest, /const result\s*=\s*await requestSlotRun/);
+  assert.match(runTest, /testRunTokens\.clear\(\)/);
+  assert.match(runTest, /beginTestSlotRun\(m\.key\)/);
+  assert.match(runTest, /isCurrentTestSlotRun\(m\.key,\s*testRunToken\)/);
+  assert.match(runTest, /state\.testResults\[m\.key\]\s*=\s*\{\s*\.\.\.result,\s*outputType\s*\}/);
+  assert.match(rerun, /testRunToken\s*=\s*beginTestSlotRun\(slotKey\)/);
+  assert.match(rerun, /isCurrentTestSlotRun\(slotKey,\s*testRunToken\)/);
+  assert.equal((runTest.match(/queueResultRender\('test',\s*m\.key\)/g) || []).length, 2);
+  assert.doesNotMatch(runTest, /\}\);\s*renderTestCompare\(\)/);
+});
+
+test('free-compare results keep the output type captured by their own request', () => {
+  const resolveType = functionBody('testResultOutputType');
+  const renderCard = functionBody('renderTestResultCard');
+  const fullscreen = functionBody('openFullscreen');
+  const updateView = functionBody('updateCardView');
+  const rows = functionBody('successfulTestRows');
+  assert.match(resolveType, /row\?\.outputType === 'html' \|\| row\?\.outputType === 'text'/);
+  assert.match(renderCard, /const outputType = testResultOutputType\(r\)/);
+  assert.match(fullscreen, /\? testResultOutputType\(r\)/);
+  assert.match(updateView, /\? testResultOutputType\(row\)/);
+  assert.match(rows, /outputType: testResultOutputType\(r\)/);
 });
 
 test('login rate limits trust only loopback proxy chains and use the last forwarded address', () => {

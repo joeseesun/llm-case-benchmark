@@ -28,6 +28,8 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Published snapshot bar：精选结果版本、运行时间、成功/失败数、精确模型标识
 - Prompt evidence panel：完整 Prompt 直接显示在题目标题下方，不折叠；评分标准作为次级信息独立披露
 - Model result columns (2–4) with header + body：公开页不依赖访客的本地模型配置
+- Independent result lifecycle：每个模型卡片独立进入运行、完成、失败与可预览状态；其他模型的流式更新不得重建已完成 iframe
+- Fullscreen artifact stage：打开后焦点直接进入 iframe，Space / WASD / 方向键由生成的 HTML 原生处理；关闭按钮保留为显式退出路径
 - Admin publish action：管理员运行成功后显示“发布为题库结果”，二次确认后生成不可变快照
 - Run bar：“用本题复跑”为次级动作，管理员的发布动作只在存在成功结果时出现
 - Settings drawer for API keys (localStorage only)
@@ -54,6 +56,10 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - Do: keep the last published snapshot visible while an admin reruns or while refresh fails
 - Do: distinguish “暂无已发布结果” from search no-results, loading and network error
 - Do: sandboxed iframe for frontend HTML previews
+- Do: reveal each completed model immediately while the remaining models keep running
+- Do: keep a completed preview iframe stable so its focus, game state and internal event listeners survive sibling updates
+- Don't: let parent modal controls retain keyboard focus after an interactive HTML preview opens
+- Don't: rebuild the whole comparison grid for a single model's stream delta, timer tick or completion
 - Don't: store API keys on server
 - Don't: auto-publish every admin run, user history, edited draft or partial in-progress output
 - Don't: call a model the winner unless the scoring source and method are visible
@@ -68,4 +74,5 @@ Result Library Console：浅色为默认，深色为第二主题。气质像 LMS
 - 120–200ms ease-out for hover/panel
 - List stagger ≤50ms; respect prefers-reduced-motion
 - Signature: result snapshot arrival uses a single 160ms opacity/translate transition; high-frequency case switching has no decorative animation
+- Keyboard-driven preview interaction has no parent-page animation or shortcut handling
 - Run/publish button press scale(0.97); accent pulse only while a real request is pending
