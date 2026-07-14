@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { classifyModelOutput, inferRequestedOutputType } = require('../public/output-classifier');
 
 const source = fs.readFileSync(path.resolve(__dirname, '../public/app.js'), 'utf8');
 const indexSource = fs.readFileSync(path.resolve(__dirname, '../public/index.html'), 'utf8');
@@ -51,6 +52,28 @@ test('administrator edits the original prompt panel in place', () => {
   assert.doesNotMatch(indexSource, />管理员编辑</);
 });
 
+test('saving a prompt immediately shows the current case prompt to administrators', () => {
+  const render = functionBody('renderStage');
+  const save = functionBody('saveCurrentCasePrompt');
+  assert.match(render, /showPublishedPrompt = state\.resultOrigin === 'published' && state\.publishedRun && !state\.isAdmin/);
+  assert.match(save, /state\.cases = state\.cases\.map/);
+  assert.match(save, /renderStage\(\)/);
+});
+
+test('live model chips hide results and publishing includes only selected models', () => {
+  const strip = functionBody('renderModelStrip');
+  const visible = functionBody('visibleResultSlots');
+  const compare = functionBody('renderCompare');
+  const publishRows = functionBody('publishedRowsFromLive');
+  assert.match(strip, /data-result-toggle/);
+  assert.match(strip, /aria-pressed/);
+  assert.match(visible, /hiddenLiveResultKeys/);
+  assert.match(compare, /const slots = visibleResultSlots\(\)/);
+  assert.match(publishRows, /new Map\(visibleResultSlots\(\)/);
+  assert.match(source, /closest\('\[data-result-toggle\]'\)/);
+  assert.match(stylesSource, /\.model-chip\.excluded/);
+});
+
 test('public case library loads only cases with published results', () => {
   const body = functionBody('loadCases');
   assert.match(body, /ready: state\.isAdmin \? 'all' : 'only'/);
@@ -59,7 +82,8 @@ test('public case library loads only cases with published results', () => {
 
 test('published results load before relying on locally configured model slots', () => {
   const body = functionBody('renderCompare');
-  assert.match(body, /const slots = displaySlots\(\)/);
+  assert.match(body, /const allSlots = displaySlots\(\)/);
+  assert.match(body, /const slots = visibleResultSlots\(\)/);
   assert.match(body, /state\.publishedRun/);
   assert.match(indexSource, /id="snapshot-strip"/);
   assert.ok(indexSource.indexOf('id="case-title"') < indexSource.indexOf('id="case-prompt-panel"'));
@@ -85,14 +109,51 @@ test('administrator explicitly publishes a completed run', () => {
   assert.match(adminSource, /运行 \/ 发布/);
 });
 
-test('text output is never upgraded into executable HTML by content sniffing', () => {
+test('standalone HTML and SVG are auto-detected as passive previews without executing arbitrary text', () => {
   const infer = functionBody('inferOutputTypeFromText');
   const renderable = functionBody('renderableArtifact');
-  const renderCard = functionBody('renderCaseResultCard');
-  assert.match(infer, /if \(explicit === 'html' \|\| explicit === 'text'\) return explicit/);
-  assert.match(renderable, /if \(outputType !== 'html'\) return null/);
-  assert.match(renderCard, /const resultOutputType = published \? outputType/);
-  assert.doesNotMatch(source, /r\.outputType === 'html' \|\| looksLikeHtml/);
+  const iframe = functionBody('renderArtifactIframe');
+  const tabs = functionBody('renderTabs');
+  const dual = functionBody('dualContentHtml');
+  const svg = '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="30" /></svg>';
+  const partialSvg = `<svg viewBox="0 0 100 100">${'<circle cx="50" cy="50" r="30" />'.repeat(6)}<path d="M10 10 L`;
+  const html = '<!doctype html><html><body><main>artifact</main></body></html>';
+  const partialHtml = `<!doctype html><html><head><style>${'.shape{display:block;color:#123}'.repeat(10)}</style></head><body><div><svg viewBox="0 0 100 100"><rect width="100" height="100"/><path d="M10`;
+  const mixed = `${'This is a Markdown explanation. '.repeat(12)}\n${svg}`;
+
+  assert.equal(classifyModelOutput(svg).kind, 'svg');
+  assert.equal(classifyModelOutput(`Here is the requested image:\n\`\`\`svg\n${svg}\n\`\`\``).kind, 'svg');
+  assert.equal(classifyModelOutput(html).kind, 'html');
+  assert.equal(classifyModelOutput('&lt;svg viewBox="0 0 100 100"&gt;&lt;rect width="100" height="100" /&gt;&lt;/svg&gt;').kind, 'svg');
+  assert.equal(classifyModelOutput(partialSvg).kind, 'svg');
+  assert.equal(classifyModelOutput(partialSvg).recovered, true);
+  assert.match(classifyModelOutput(partialSvg).source, /<\/svg>$/);
+  assert.equal(classifyModelOutput(partialHtml).kind, 'html');
+  assert.equal(classifyModelOutput(partialHtml).recovered, true);
+  assert.match(classifyModelOutput(partialHtml).source, /<\/html>$/);
+  assert.equal(classifyModelOutput('<script>alert(1)</script>').kind, 'markdown');
+  assert.equal(classifyModelOutput('Use `<svg>` to start an SVG document.').kind, 'markdown');
+  assert.equal(classifyModelOutput(mixed).kind, 'markdown');
+  assert.equal(classifyModelOutput(`${svg}\n${svg}`).kind, 'markdown');
+
+  assert.equal(inferRequestedOutputType({ outputType: 'text', category: 'frontend', prompt: '画一个svg图：A pelican riding a bike' }), 'html');
+  assert.equal(inferRequestedOutputType({ outputType: 'text', category: 'frontend', prompt: '解释 SVG 与 Canvas 的区别' }), 'text');
+  assert.equal(inferRequestedOutputType({ outputType: 'text', category: 'frontend', prompt: '分析这段 HTML 的可访问性并给出文字建议' }), 'text');
+  assert.equal(inferRequestedOutputType({ outputType: 'text', category: 'frontend', prompt: '写一个教程，介绍如何创建 SVG' }), 'text');
+  assert.equal(inferRequestedOutputType({ outputType: 'text', category: 'frontend', prompt: 'Create an HTML code review dashboard' }), 'html');
+  assert.equal(inferRequestedOutputType({ outputType: 'html', prompt: '解释 HTML' }), 'html');
+
+  assert.match(infer, /OUTPUT_CLASSIFIER\?\.inferRequestedOutputType/);
+  assert.match(serverSource, /function effectiveCaseSystem\(c\)[\s\S]*inferRequestedOutputType\(c\) === 'html'/);
+  assert.match(serverSource, /const publishedOutputType = inferRequestedOutputType\(c\)/);
+  assert.match(renderable, /OUTPUT_CLASSIFIER\?\.classifyModelOutput/);
+  assert.match(renderable, /const allowScripts = false/);
+  assert.match(renderable, /recovered: !!detected\.recovered/);
+  assert.match(iframe, /artifact\.allowScripts === false \? '' : 'allow-scripts'/);
+  assert.match(tabs, /artifact\?\.recovered \? '预览 · 不完整' : '预览'/);
+  assert.match(dual, /renderableArtifact\(content, outputType\)/);
+  assert.match(dual, /renderArtifactIframe\(artifact/);
+  assert.doesNotMatch(dual, /looksLikeHtml|stripCodeFence|srcdoc/);
 });
 
 test('published runs record effective request metadata and ignore stale case callbacks', () => {
@@ -113,11 +174,14 @@ test('published runs record effective request metadata and ignore stale case cal
 test('public HTML previews use a narrow network allowlist', () => {
   const body = functionBody('applyPreviewCsp');
   const policy = functionBody('previewCspPolicy');
-  assert.match(body, /const policy = previewCspPolicy\(\)/);
+  const passivePolicy = functionBody('passivePreviewCspPolicy');
+  assert.match(body, /allowScripts \? previewCspPolicy\(\) : passivePreviewCspPolicy\(\)/);
   assert.match(policy, /connect-src 'none'/);
   assert.match(policy, /script-src 'unsafe-inline' https:\/\/cdn\.jsdelivr\.net https:\/\/unpkg\.com/);
   assert.doesNotMatch(policy, /img-src[^;]*https:/);
   assert.doesNotMatch(policy, /script-src[^;]* https:;/);
+  assert.match(passivePolicy, /script-src 'none'/);
+  assert.doesNotMatch(passivePolicy, /https:/);
   assert.match(body, /new DOMParser\(\)\.parseFromString\(html, 'text\/html'\)/);
   assert.match(body, /doc\.head\.prepend\(meta\)/);
   assert.doesNotMatch(body, /replace\(\/<head|test\(html\)[\s\S]*<head/i);
@@ -128,7 +192,8 @@ test('fullscreen HTML previews receive keyboard focus without weakening isolatio
   const iframe = functionBody('renderArtifactIframe');
   const modal = functionBody('openModal');
   assert.match(fullscreen, /renderArtifactIframe\(resolvedArtifact,\s*\{[^}]*focusable:\s*true/);
-  assert.match(iframe, /sandbox="allow-scripts"/);
+  assert.match(iframe, /const sandbox = artifact\.allowScripts === false \? '' : 'allow-scripts'/);
+  assert.match(iframe, /sandbox="\$\{sandbox\}"/);
   assert.match(iframe, /referrerpolicy="no-referrer"/);
   assert.match(iframe, /focusable \? ' tabindex="0"'/);
   assert.doesNotMatch(iframe, /allow-same-origin|allow-popups|allow-modals|allow-forms/);
@@ -362,6 +427,7 @@ test('community and run-history cards share independent sandboxed preview surfac
   assert.match(actions, /iconLinkAction\(\{ href: previewUrl/);
   assert.match(archivedFullscreen, /presentFullscreen\(/);
   assert.match(archivedFullscreen, /iframe\?\.srcdoc/);
+  assert.match(archivedFullscreen, /getAttribute\('sandbox'\)[\s\S]*includes\('allow-scripts'\)/);
   assert.match(switchView, /closest\('\[data-archive-card\]'\)/);
   assert.match(switchView, /panel\.hidden = panel\.dataset\.archivePanel !== mode/);
   assert.match(keyboard, /'ArrowLeft', 'ArrowRight', 'Home', 'End'/);
@@ -386,7 +452,7 @@ test('persisted results use stable shareable preview paths and a sandboxed serve
   assert.match(serverSource, /app\.get\('\/preview\/case\/:caseId\/:version\/:index'/);
   assert.match(serverSource, /app\.get\('\/preview\/contribution\/:id\/:index'/);
   assert.match(serverSource, /app\.get\('\/preview\/history\/:id\/:index'/);
-  assert.match(serverSource, /<iframe sandbox="\$\{artifact \? 'allow-scripts' : ''\}" referrerpolicy="no-referrer" srcdoc=/);
+  assert.match(serverSource, /<iframe sandbox="\$\{allowScripts \? 'allow-scripts' : ''\}" referrerpolicy="no-referrer" srcdoc=/);
   assert.doesNotMatch(serverSource, /<iframe[^>]*allow-same-origin/);
 });
 
@@ -413,10 +479,11 @@ test('new-window HTML actions open an isolated rendered preview instead of top-l
   const archiveClick = functionBody('handleArchivedResultClick');
 
   assert.match(openResult, /artifact \? artifact\.preview : renderTextPreviewDocument\(content\)/);
+  assert.match(openResult, /artifact\?\.allowScripts !== false && !!artifact/);
   assert.match(wrapper, /previewUrl = URL\.createObjectURL\(new Blob\(\[previewDocument\]/);
   assert.match(wrapper, /new Blob\(\[wrapper\]/);
   assert.match(wrapper, /wrapperCsp = previewCspPolicy\('blob:'\)/);
-  assert.match(wrapper, /<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="\$\{escapeHtml\(previewUrl\)\}"/);
+  assert.match(wrapper, /<iframe sandbox="\$\{allowScripts \? 'allow-scripts' : ''\}" referrerpolicy="no-referrer" src="\$\{escapeHtml\(previewUrl\)\}"/);
   assert.match(wrapper, /anchor\.target = '_blank'/);
   assert.match(wrapper, /anchor\.rel = 'noopener noreferrer'/);
   assert.match(wrapper, /URL\.revokeObjectURL\(url\)/);
@@ -428,7 +495,7 @@ test('new-window HTML actions open an isolated rendered preview instead of top-l
   assert.match(testCard, /data-test-open-result/);
   assert.match(caseCard, /新窗口打开预览/);
   assert.match(testCard, /新窗口打开预览/);
-  assert.match(archiveClick, /openIsolatedPreviewDocument\(iframe\.srcdoc, title\)/);
+  assert.match(archiveClick, /getAttribute\('sandbox'\)[\s\S]*openIsolatedPreviewDocument\(iframe\.srcdoc, title, allowScripts\)/);
   assert.doesNotMatch(source, /window\.open\('',\s*'_blank'\)|document\.write\(/);
 });
 

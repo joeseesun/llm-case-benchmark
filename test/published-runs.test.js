@@ -209,6 +209,42 @@ test('administrator explicitly publishes immutable featured run versions', async
     assert.deepEqual(created.body.publishedRun.runConfig, { temperature: 0.7, maxTokens: 8192 });
   });
 
+  await t.test('publishing accepts nine selected model results while retaining a bounded payload', async () => {
+    const target = await jsonFetch('/api/cases/write-long-context-brief');
+    const results = Array.from({ length: 9 }, (_, index) => ({
+      status: 'ok',
+      model: `model-${index + 1}`,
+      content: `official output ${index + 1}`,
+    }));
+    const created = await jsonFetch('/api/admin/cases/write-long-context-brief/published-runs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({
+        prompt: target.body.case.prompt,
+        system: target.body.case.system,
+        results,
+      }),
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.body.publishedRun.results.length, 9);
+
+    const tooMany = await jsonFetch('/api/admin/cases/write-long-context-brief/published-runs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({
+        prompt: target.body.case.prompt,
+        system: target.body.case.system,
+        results: Array.from({ length: 33 }, (_, index) => ({
+          status: 'ok',
+          model: `model-${index + 1}`,
+          content: `official output ${index + 1}`,
+        })),
+      }),
+    });
+    assert.equal(tooMany.response.status, 400);
+    assert.match(tooMany.body.error, /1–32/);
+  });
+
   await t.test('publishing validates case, prompt, and at least one successful result', async () => {
     const headers = { 'content-type': 'application/json', cookie };
     const missingCase = await jsonFetch('/api/admin/cases/missing-case/published-runs', {

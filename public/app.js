@@ -8,6 +8,7 @@
   const PRESET_MAP = window.CB_AI_PROVIDER_MAP || {};
   const DEFAULT_PRESET = window.CB_DEFAULT_AI_PRESET_ID || 'deepseek';
   const PROMPT_LIBRARY = Array.isArray(window.CB_PROMPT_LIBRARY) ? window.CB_PROMPT_LIBRARY : [];
+  const OUTPUT_CLASSIFIER = window.CB_OUTPUT_CLASSIFIER || null;
   const HTML_MIN_TOKENS = 8192;
   const HTML_OUTPUT_SYSTEM =
     '只输出一个可直接放进 iframe 预览的完整 HTML 或 SVG。不要解释、不要 Markdown、不要代码围栏。若用户要求 SVG 动画，优先输出一个完整 <svg ...>...</svg>，包含必要的 <style>、<animate> 或 <animateTransform>，必须闭合所有标签。';
@@ -28,6 +29,7 @@
     resultOrigin: 'published',
     resultSlots: [],
     liveSlots: [],
+    hiddenLiveResultKeys: new Set(),
     liveRunContext: null,
     publishedRun: null,
     publishedHistory: [],
@@ -58,6 +60,16 @@
     promptLibraryQuery: '',
     selectedContributionId: '',
     pendingDelete: null,
+    dualOpen: false,
+    dualLeft: '',
+    dualRight: '',
+    dualSyncScroll: true,
+    testDualOpen: false,
+    testDualLeft: '',
+    testDualRight: '',
+    testDualSyncScroll: true,
+    winnerKey: '',
+    testWinnerKey: '',
   };
   let runTicker = null;
   const modalReturnFocus = new Map();
@@ -374,6 +386,16 @@
   }
 
   function inferOutputTypeFromText({ outputType, output_type: outputTypeSnake, category = '', title = '', summary = '', prompt = '', tags = [] } = {}) {
+    const classified = OUTPUT_CLASSIFIER?.inferRequestedOutputType?.({
+      outputType,
+      output_type: outputTypeSnake,
+      category,
+      title,
+      summary,
+      prompt,
+      tags,
+    });
+    if (classified === 'html' || classified === 'text') return classified;
     const explicit = outputType ?? outputTypeSnake;
     if (explicit === 'html' || explicit === 'text') return explicit;
     const blob = `${category} ${title} ${summary} ${prompt} ${Array.isArray(tags) ? tags.join(' ') : tags || ''}`;
@@ -471,8 +493,12 @@
     return `default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-src ${frameSource}; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com;`;
   }
 
-  function applyPreviewCsp(markup) {
-    const policy = previewCspPolicy();
+  function passivePreviewCspPolicy() {
+    return "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'none';";
+  }
+
+  function applyPreviewCsp(markup, { allowScripts = true } = {}) {
+    const policy = allowScripts ? previewCspPolicy() : passivePreviewCspPolicy();
     const html = String(markup || '');
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -486,12 +512,12 @@
     }
   }
 
-  function wrapSvgForPreview(svg) {
+  function wrapSvgForPreview(svg, options) {
     return applyPreviewCsp(`<!doctype html><html><head><meta charset="utf-8"><style>
       html,body{margin:0;min-height:100%;background:#fff;}
       body{display:grid;place-items:center;padding:12px;box-sizing:border-box;}
       svg{max-width:100%;height:auto;display:block;}
-    </style></head><body>${svg}</body></html>`);
+    </style></head><body>${svg}</body></html>`, options);
   }
 
   function firstRenderableFence(text) {
@@ -509,24 +535,39 @@
   }
 
   function renderableArtifact(text, outputType = 'text') {
-    if (outputType !== 'html') return null;
     const raw = decodeArtifactEntities(String(text || '').trim());
+    if (outputType !== 'html') {
+      const detected = OUTPUT_CLASSIFIER?.classifyModelOutput?.(raw);
+      if (!detected || !['html', 'svg'].includes(detected.kind)) return null;
+      const allowScripts = false;
+      return {
+        source: detected.source,
+        preview: detected.kind === 'svg'
+          ? wrapSvgForPreview(detected.source, { allowScripts })
+          : applyPreviewCsp(detected.source, { allowScripts }),
+        kind: detected.kind,
+        autoDetected: true,
+        allowScripts,
+        recovered: !!detected.recovered,
+      };
+    }
     const stripped = stripCodeFence(raw);
     const direct = stripped.trim();
     const fenced = firstRenderableFence(raw);
     const code = fenced ? fenced.code : direct;
     const html = extractHtmlMarkup(code) || extractHtmlMarkup(raw);
     if (html) {
-      return { source: html, preview: applyPreviewCsp(html), kind: 'html' };
+      return { source: html, preview: applyPreviewCsp(html), kind: 'html', autoDetected: false, allowScripts: true };
     }
     const svg = extractSvgMarkup(code) || extractSvgMarkup(raw);
-    if (svg) return { source: svg, preview: wrapSvgForPreview(svg), kind: 'svg' };
+    if (svg) return { source: svg, preview: wrapSvgForPreview(svg), kind: 'svg', autoDetected: false, allowScripts: true };
     return null;
   }
 
   function renderArtifactIframe(artifact, { title = 'HTML 预览', loading = false, focusable = false } = {}) {
     if (!artifact?.preview) return '';
-    return `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="${escapeHtml(title)}"${loading ? ' loading="lazy"' : ''}${focusable ? ' tabindex="0"' : ''}></iframe>`;
+    const sandbox = artifact.allowScripts === false ? '' : 'allow-scripts';
+    return `<iframe sandbox="${sandbox}" referrerpolicy="no-referrer" srcdoc="${escapeHtml(artifact.preview)}" title="${escapeHtml(title)}"${loading ? ' loading="lazy"' : ''}${focusable ? ' tabindex="0"' : ''}></iframe>`;
   }
 
   function renderTextPreviewDocument(content) {
@@ -536,13 +577,13 @@
     </style></head><body><pre>${escapeHtml(content)}</pre></body></html>`;
   }
 
-  function openIsolatedPreviewDocument(previewDocument, title = '模型输出预览') {
+  function openIsolatedPreviewDocument(previewDocument, title = '模型输出预览', allowScripts = true) {
     const wrapperCsp = previewCspPolicy('blob:');
     const safeTitle = escapeHtml(title);
     const previewUrl = URL.createObjectURL(new Blob([previewDocument], { type: 'text/html;charset=utf-8' }));
     const wrapper = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="${wrapperCsp}"><title>${safeTitle}</title><style>
       html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#fff}iframe{display:block;width:100%;height:100%;border:0;background:#fff}
-    </style></head><body><iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="${escapeHtml(previewUrl)}" title="${safeTitle}"></iframe></body></html>`;
+    </style></head><body><iframe sandbox="${allowScripts ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" src="${escapeHtml(previewUrl)}" title="${safeTitle}"></iframe></body></html>`;
     const url = URL.createObjectURL(new Blob([wrapper], { type: 'text/html;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -562,7 +603,8 @@
     const artifact = renderableArtifact(content, outputType);
     openIsolatedPreviewDocument(
       artifact ? artifact.preview : renderTextPreviewDocument(content),
-      artifact ? title : `${title} · 原文`
+      artifact ? title : `${title} · 原文`,
+      artifact?.allowScripts !== false && !!artifact
     );
   }
 
@@ -586,8 +628,9 @@
   function renderTabs({ slotKey, source, artifact, mode, running }) {
     const viewAttr = source === 'test' ? 'data-test-view' : 'data-view';
     const safeKey = escapeHtml(slotKey);
+    const previewLabel = artifact?.recovered ? '预览 · 不完整' : '预览';
     const left = artifact
-      ? `<button type="button" ${viewAttr}="${safeKey}" data-mode="preview" aria-selected="${mode === 'preview'}">预览</button>
+      ? `<button type="button" ${viewAttr}="${safeKey}" data-mode="preview" aria-selected="${mode === 'preview'}">${previewLabel}</button>
          <button type="button" ${viewAttr}="${safeKey}" data-mode="source" aria-selected="${mode === 'source'}">源码</button>`
       : `<button type="button" ${viewAttr}="${safeKey}" data-mode="md" aria-selected="${mode === 'md'}">Markdown</button>
          <button type="button" ${viewAttr}="${safeKey}" data-mode="raw" aria-selected="${mode === 'raw'}">原文</button>`;
@@ -915,6 +958,12 @@
     return state.liveSlots.length ? state.liveSlots : runSlots().map(slotSnapshot);
   }
 
+  function visibleResultSlots() {
+    const slots = displaySlots();
+    if (state.resultOrigin !== 'live') return slots;
+    return slots.filter((slot) => !state.hiddenLiveResultKeys.has(slot.key));
+  }
+
   function publishedResultKey(run, index) {
     return `published:${run?.version || 'latest'}:${index}`;
   }
@@ -923,6 +972,7 @@
     cancelCaseRun();
     state.publishedRun = run || null;
     state.resultOrigin = 'published';
+    state.hiddenLiveResultKeys.clear();
     state.results = {};
     state.resultSlots = [];
     state.scores = {};
@@ -986,13 +1036,24 @@
   }
 
   function updateResultActions() {
-    const caseHasResults = hasSuccessfulResult(state.results);
+    const selectedSlots = visibleResultSlots();
+    const selectedSuccessfulSlots = selectedSlots.filter(
+      (slot) => state.results[slot.key]?.status === 'ok' && state.results[slot.key]?.content
+    );
+    const caseHasResults = selectedSuccessfulSlots.length > 0;
     $('#btn-export')?.classList.toggle('hidden', !caseHasResults);
     $('#btn-contribute')?.classList.toggle('hidden', !caseHasResults || state.resultOrigin !== 'live');
-    $('#btn-publish')?.classList.toggle(
+    $('#btn-dual-compare')?.classList.toggle('hidden', selectedSuccessfulSlots.length < 2);
+    if (state.dualOpen) renderDualCompare('case');
+    else hideDualCompare('case');
+    const publishButton = $('#btn-publish');
+    publishButton?.classList.toggle(
       'hidden',
       !state.isAdmin || state.resultOrigin !== 'live' || !caseHasResults || state.running
     );
+    if (publishButton && state.resultOrigin === 'live' && caseHasResults) {
+      publishButton.textContent = `发布已选结果（${selectedSuccessfulSlots.length}）`;
+    }
     $('#btn-view-published')?.classList.toggle(
       'hidden',
       !(
@@ -1205,7 +1266,8 @@
       .filter(Boolean)
       .map((value) => `<span class="tag">${escapeHtml(value)}</span>`)
       .join('');
-    const visiblePrompt = state.resultOrigin === 'published' && state.publishedRun
+    const showPublishedPrompt = state.resultOrigin === 'published' && state.publishedRun && !state.isAdmin;
+    const visiblePrompt = showPublishedPrompt
       ? state.publishedRun.prompt || c.prompt
       : c.prompt || '';
     const visibleRubric = state.resultOrigin === 'published' && state.publishedRun
@@ -1236,22 +1298,21 @@
     const slots = state.liveSlots.length ? state.liveSlots : runSlots();
     const parts = slots.map((m) => {
       const source = m.kind === 'site' ? '站点' : '本机';
+      const selected = !state.hiddenLiveResultKeys.has(m.key);
       const chip = `
         <span class="dot"></span>
         <span>${escapeHtml(m.providerName || m.label)}</span>
         <span class="model-chip-model">${escapeHtml(m.model || '')}</span>
         <span class="model-chip-source">${source}</span>`;
-      if (m.kind === 'site') {
-        return `<button type="button" class="model-chip selected" data-site="${escapeHtml(m.siteModelId)}" aria-label="切换模型 ${escapeHtml(m.label)}">${chip}</button>`;
-      }
-      return `<div class="model-chip selected">${chip}</div>`;
+      return `<button type="button" class="model-chip ${selected ? 'selected' : 'excluded'}" data-result-toggle="${escapeHtml(m.key)}" aria-pressed="${selected}" aria-label="${selected ? '隐藏' : '显示'}结果 ${escapeHtml(m.label)}">${chip}</button>`;
     });
     if (!parts.length) {
       strip.innerHTML =
         '<span style="font-size:12px;color:var(--muted)">尚未选择可用模型，请打开「模型设置」</span>';
       return;
     }
-    strip.innerHTML = parts.join('');
+    const selectedCount = slots.filter((m) => !state.hiddenLiveResultKeys.has(m.key)).length;
+    strip.innerHTML = `<span class="result-selection-count">已选 ${selectedCount}/${slots.length}</span>${parts.join('')}`;
   }
 
   function scoreControls(slotKey, rubric) {
@@ -1312,9 +1373,9 @@
       ? sharedPreviewPath('case', c?.id, publishedIndex, state.publishedRun?.version)
       : '';
     return `
-      <article class="col ${published ? 'published-col' : ''} ${opensArtifactPreview ? 'artifact-col' : 'text-col'}" data-slot="${escapeHtml(m.key)}">
+      <article class="col ${published ? 'published-col' : ''} ${opensArtifactPreview ? 'artifact-col' : 'text-col'} ${!published && state.winnerKey === m.key ? 'winner-col' : ''}" data-slot="${escapeHtml(m.key)}">
         <div class="col-head">
-          <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
+          <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}${!published && state.winnerKey === m.key ? '<span class="winner-badge">最佳</span>' : ''}</h3>
           <div class="stats">${escapeHtml(stats)}</div>
         </div>
         ${tabs}
@@ -1326,6 +1387,7 @@
           ${previewUrl
             ? iconLinkAction({ href: previewUrl, iconName: 'external', label: opensArtifactPreview ? '新窗口打开可分享预览' : '新窗口打开可分享原文' })
             : iconAction({ attr: 'data-open-result', key: m.key, iconName: 'external', label: opensArtifactPreview ? '新窗口打开预览' : '新窗口打开原文' })}
+          ${published ? '' : `<button type="button" class="pick-winner ${state.winnerKey === m.key ? 'is-active' : ''}" data-pick-winner="${escapeHtml(m.key)}">${state.winnerKey === m.key ? '取消最佳' : '选为最佳'}</button>`}
           ${published ? '' : `<button type="button" class="score-toggle" data-score-toggle="${escapeHtml(m.key)}" aria-expanded="${state.scoreOpen.has(m.key)}">${state.scoreOpen.has(m.key) ? '收起评分' : '我要打分'}</button>`}
         </div>` : ''}
       </article>`;
@@ -1362,9 +1424,9 @@
     }
     const opensArtifactPreview = r?.status === 'ok' && !!renderableArtifact(r.content, outputType);
     return `
-      <article class="col" data-slot="${escapeHtml(m.key)}">
+      <article class="col ${state.testWinnerKey === m.key ? 'winner-col' : ''}" data-slot="${escapeHtml(m.key)}">
         <div class="col-head">
-          <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}</h3>
+          <h3><span class="provider">${escapeHtml(m.providerName || '')}</span>${escapeHtml(m.model || m.label)}${state.testWinnerKey === m.key ? '<span class="winner-badge">最佳</span>' : ''}</h3>
           <div class="stats">${escapeHtml(stats)}</div>
         </div>
         ${tabs}
@@ -1373,6 +1435,7 @@
           ${iconAction({ attr: 'data-test-copy', key: m.key, iconName: 'copy', label: '复制输出' })}
           ${iconAction({ attr: 'data-test-fs', key: m.key, iconName: 'maximize', label: '全屏查看' })}
           ${iconAction({ attr: 'data-test-open-result', key: m.key, iconName: 'external', label: opensArtifactPreview ? '新窗口打开预览' : '新窗口打开原文' })}
+          <button type="button" class="pick-winner ${state.testWinnerKey === m.key ? 'is-active' : ''}" data-test-pick-winner="${escapeHtml(m.key)}">${state.testWinnerKey === m.key ? '取消最佳' : '选为最佳'}</button>
         </div>` : ''}
       </article>`;
   }
@@ -1401,10 +1464,146 @@
     card.outerHTML = renderCaseResultCard(slot, { c, published, outputType });
   }
 
+
+  function okResultSlots(source = 'case') {
+    if (source === 'test') {
+      return configuredSlots({ selectedSiteOnly: false })
+        .filter((s) => state.testSelectedKeys.has(s.key) && state.testResults[s.key]?.status === 'ok' && state.testResults[s.key]?.content);
+    }
+    return visibleResultSlots().filter((s) => state.results[s.key]?.status === 'ok' && state.results[s.key]?.content);
+  }
+
+  function hideDualCompare(source = 'case') {
+    const root = source === 'test' ? $('#test-dual-compare') : $('#dual-compare');
+    root?.classList.add('hidden');
+    if (source === 'test') state.testDualOpen = false;
+    else state.dualOpen = false;
+  }
+
+  function dualContentHtml(content, outputType, artifact = renderableArtifact(content, outputType)) {
+    if (artifact) return renderArtifactIframe(artifact, { title: '双列结果预览' });
+    if (typeof renderMarkdown === 'function') {
+      return `<div class="md">${renderMarkdown(content)}</div>`;
+    }
+    return escapeHtml(content).replace(/\n/g, '<br>');
+  }
+
+  function bindDualScroll(leftEl, rightEl, enabled) {
+    if (!leftEl || !rightEl) return;
+    leftEl.onscroll = null;
+    rightEl.onscroll = null;
+    if (!enabled) return;
+    let lock = false;
+    const sync = (from, to) => {
+      if (lock) return;
+      lock = true;
+      const maxFrom = from.scrollHeight - from.clientHeight;
+      const maxTo = to.scrollHeight - to.clientHeight;
+      const ratio = maxFrom > 0 ? from.scrollTop / maxFrom : 0;
+      to.scrollTop = ratio * Math.max(0, maxTo);
+      requestAnimationFrame(() => { lock = false; });
+    };
+    leftEl.onscroll = () => sync(leftEl, rightEl);
+    rightEl.onscroll = () => sync(rightEl, leftEl);
+  }
+
+  function renderDualCompare(source = 'case') {
+    const isTest = source === 'test';
+    const root = isTest ? $('#test-dual-compare') : $('#dual-compare');
+    const leftSel = isTest ? $('#test-dual-left') : $('#dual-left');
+    const rightSel = isTest ? $('#test-dual-right') : $('#dual-right');
+    const leftHead = isTest ? $('#test-dual-left-head') : $('#dual-left-head');
+    const rightHead = isTest ? $('#test-dual-right-head') : $('#dual-right-head');
+    const leftBody = isTest ? $('#test-dual-left-body') : $('#dual-left-body');
+    const rightBody = isTest ? $('#test-dual-right-body') : $('#dual-right-body');
+    const syncBox = isTest ? $('#test-dual-sync-scroll') : $('#dual-sync-scroll');
+    if (!root || !leftSel) return;
+
+    const slots = okResultSlots(source);
+    if (slots.length < 2) {
+      hideDualCompare(source);
+      toast('至少需要 2 个成功结果才能对照');
+      return;
+    }
+
+    if (isTest) state.testDualOpen = true;
+    else state.dualOpen = true;
+    root.classList.remove('hidden');
+
+    let leftKey = isTest ? state.testDualLeft : state.dualLeft;
+    let rightKey = isTest ? state.testDualRight : state.dualRight;
+    if (!slots.some((s) => s.key === leftKey)) leftKey = slots[0].key;
+    if (!slots.some((s) => s.key === rightKey) || rightKey === leftKey) {
+      rightKey = (slots.find((s) => s.key !== leftKey) || slots[1]).key;
+    }
+    if (isTest) {
+      state.testDualLeft = leftKey;
+      state.testDualRight = rightKey;
+    } else {
+      state.dualLeft = leftKey;
+      state.dualRight = rightKey;
+    }
+
+    const optionHtml = slots
+      .map((s) => `<option value="${escapeHtml(s.key)}">${escapeHtml(s.label || s.model)}</option>`)
+      .join('');
+    leftSel.innerHTML = optionHtml;
+    rightSel.innerHTML = optionHtml;
+    leftSel.value = leftKey;
+    rightSel.value = rightKey;
+
+    const leftSlot = slots.find((s) => s.key === leftKey);
+    const rightSlot = slots.find((s) => s.key === rightKey);
+    const leftRes = isTest ? state.testResults[leftKey] : state.results[leftKey];
+    const rightRes = isTest ? state.testResults[rightKey] : state.results[rightKey];
+    const c = activeCase();
+    const leftType = isTest
+      ? (typeof testResultOutputType === 'function' ? testResultOutputType(leftRes) : 'text')
+      : (state.resultOrigin === 'published'
+          ? (state.publishedRun?.outputType || caseOutputType(c))
+          : caseOutputType(c));
+    const rightType = isTest
+      ? (typeof testResultOutputType === 'function' ? testResultOutputType(rightRes) : 'text')
+      : leftType;
+    const leftArtifact = renderableArtifact(leftRes?.content || '', leftType);
+    const rightArtifact = renderableArtifact(rightRes?.content || '', rightType);
+
+    leftHead.textContent = leftSlot?.label || leftKey;
+    rightHead.textContent = rightSlot?.label || rightKey;
+    leftBody.innerHTML = dualContentHtml(leftRes?.content || '', leftType, leftArtifact);
+    rightBody.innerHTML = dualContentHtml(rightRes?.content || '', rightType, rightArtifact);
+    leftBody.classList.toggle('md', !leftArtifact);
+    rightBody.classList.toggle('md', !rightArtifact);
+
+    if (syncBox) syncBox.checked = isTest ? state.testDualSyncScroll : state.dualSyncScroll;
+    const syncOn = isTest ? state.testDualSyncScroll : state.dualSyncScroll;
+    // for html iframe, scroll container is body; for text also body
+    bindDualScroll(leftBody, rightBody, syncOn);
+  }
+
+  function setWinner(slotKey, source = 'case') {
+    if (source === 'test') {
+      state.testWinnerKey = state.testWinnerKey === slotKey ? '' : slotKey;
+      const box = $('#test-compare');
+      if (box) {
+        const slots = configuredSlots({ selectedSiteOnly: false })
+          .filter((item) => state.testSelectedKeys.has(item.key));
+        box.innerHTML = slots.map((m) => renderTestResultCard(m)).join('');
+      }
+      toast(state.testWinnerKey ? '已标记本场最佳' : '已取消最佳标记');
+      return;
+    }
+    state.winnerKey = state.winnerKey === slotKey ? '' : slotKey;
+    renderCompare();
+    if (state.dualOpen) renderDualCompare('case');
+    toast(state.winnerKey ? '已标记本场最佳' : '已取消最佳标记');
+  }
+
   function renderCompare() {
     const c = activeCase();
     const box = $('#compare');
-    const slots = displaySlots();
+    const allSlots = displaySlots();
+    const slots = visibleResultSlots();
     const published = state.resultOrigin === 'published';
     const outputType = published ? (state.publishedRun?.outputType || caseOutputType(c)) : caseOutputType(c);
     box.style.setProperty('--compare-cols', String(Math.min(3, Math.max(1, slots.length))));
@@ -1426,6 +1625,13 @@
         <strong>这道题还没有公开结果</strong>
         <span>${state.isAdmin ? '选择模型跑完本题，检查输出后再发布为题库结果。' : '管理员确认发布后，这里会直接展示多模型实测输出。'}</span>
         ${state.isAdmin ? '<button type="button" class="ghost-btn" data-start-run>运行并生成结果</button>' : ''}
+      </div></div>`;
+      return;
+    }
+    if (!published && allSlots.length && !slots.length) {
+      box.innerHTML = `<div class="published-empty"><div>
+        <strong>当前结果已全部隐藏</strong>
+        <span>点击上方模型名称，可重新显示对应结果。</span>
       </div></div>`;
       return;
     }
@@ -1781,6 +1987,7 @@
     const runResults = {};
     state.resultOrigin = 'live';
     state.liveSlots = runContext.slots;
+    state.hiddenLiveResultKeys.clear();
     state.liveRunContext = runContext;
     setUrlPublishedVersion(null, true);
     state.results = runResults;
@@ -2357,7 +2564,7 @@
   function exportResults() {
     const c = activeCase();
     if (!c) return;
-    const slots = displaySlots();
+    const slots = visibleResultSlots();
     if (!slots.some((m) => state.results[m.key]?.status === 'ok')) {
       toast('没有可导出的成功结果');
       return;
@@ -2406,10 +2613,10 @@
     toast('已导出 Markdown');
   }
 
-  function successfulCaseRows({ results = state.results, slots = displaySlots(), outputType = caseOutputType(activeCase()) } = {}) {
+  function successfulCaseRows({ results = state.results, slots = visibleResultSlots(), outputType = caseOutputType(activeCase()) } = {}) {
     const slotMap = new Map(slots.map((m) => [m.key, m]));
     return Object.entries(results)
-      .filter(([, r]) => r?.status === 'ok')
+      .filter(([key, r]) => slotMap.has(key) && r?.status === 'ok')
       .map(([key, r]) => {
         const slot = slotMap.get(key);
         return {
@@ -2449,9 +2656,9 @@
 
   function publishedRowsFromLive() {
     const outputType = state.liveRunContext?.outputType === 'html' ? 'html' : 'text';
-    const slotMap = new Map((state.liveSlots || []).map((slot) => [slot.key, slot]));
+    const slotMap = new Map(visibleResultSlots().map((slot) => [slot.key, slot]));
     return Object.entries(state.results)
-      .filter(([, result]) => result?.status === 'ok' || result?.status === 'error')
+      .filter(([key, result]) => slotMap.has(key) && (result?.status === 'ok' || result?.status === 'error'))
       .map(([key, result]) => {
         const slot = slotMap.get(key) || {};
         return {
@@ -2484,7 +2691,7 @@
       toast('请先以管理员身份完成本题运行');
       return;
     }
-    $('#publish-summary').textContent = `「${c.title}」本次 ${ok} 个模型成功${failed ? `、${failed} 个失败` : ''}。确认后将成为访客默认看到的精选结果，旧版本继续保留。`;
+    $('#publish-summary').textContent = `「${c.title}」已选 ${ok} 个成功结果${failed ? `、${failed} 个失败结果` : ''}。确认后只发布这些已选模型，旧版本继续保留。`;
     $('#publish-checklist').innerHTML = [
       `<span>Prompt 与当前题目一致</span>`,
       `<span>${ok} 个成功结果将公开${failed ? `，并保留 ${failed} 个失败状态` : ''}</span>`,
@@ -2948,7 +3155,7 @@
     }
     const previewMode = artifact ? 'preview' : 'md';
     const sourceMode = artifact ? 'source' : 'raw';
-    const previewLabel = artifact ? '预览' : 'Markdown';
+    const previewLabel = artifact?.recovered ? '预览 · 不完整' : artifact ? '预览' : 'Markdown';
     const sourceLabel = artifact ? '源码' : '原文';
     const previewPanelId = `${archiveKey}-${previewMode}`;
     const sourcePanelId = `${archiveKey}-${sourceMode}`;
@@ -3002,11 +3209,12 @@
     const iframe = card.querySelector('[data-archive-panel="preview"] iframe');
     const source = card.querySelector('[data-archive-panel="source"]')?.textContent || '';
     if (iframe?.srcdoc) {
+      const allowScripts = iframe.getAttribute('sandbox')?.split(/\s+/).includes('allow-scripts') || false;
       presentFullscreen({
         title,
         content: source,
         outputType: 'html',
-        artifact: { source, preview: iframe.srcdoc, kind: 'html' },
+        artifact: { source, preview: iframe.srcdoc, kind: 'html', allowScripts },
       });
       return;
     }
@@ -3049,7 +3257,8 @@
     const title = card.querySelector('.col-head h3')?.textContent?.trim() || '模型输出预览';
     const iframe = card.querySelector('[data-archive-panel="preview"] iframe');
     if (iframe?.srcdoc) {
-      openIsolatedPreviewDocument(iframe.srcdoc, title);
+      const allowScripts = iframe.getAttribute('sandbox')?.split(/\s+/).includes('allow-scripts') || false;
+      openIsolatedPreviewDocument(iframe.srcdoc, title, allowScripts);
       return;
     }
     const raw = card.querySelector('[data-archive-panel="raw"]')?.textContent || '';
@@ -3246,6 +3455,13 @@
       (state.liveSlots.length ? state.liveSlots : runSlots()).forEach((m) => {
         if (state.scores[m.key]) scores[m.label] = state.scores[m.key];
       });
+      if (state.winnerKey) {
+        const win = (state.liveSlots.length ? state.liveSlots : runSlots()).find((m) => m.key === state.winnerKey);
+        if (win) scores.__winner = win.label || win.model;
+      }
+    } else if (state.testWinnerKey) {
+      const win = configuredSlots({ selectedSiteOnly: false }).find((m) => m.key === state.testWinnerKey);
+      if (win) scores.__winner = win.label || win.model;
     }
     const prompt = isTest ? testPrompt : state.liveRunContext?.prompt || casePromptForRun(c);
     const title = isTest
@@ -3360,6 +3576,7 @@
       state.results = {};
       state.resultSlots = [];
       state.liveSlots = [];
+      state.hiddenLiveResultKeys.clear();
       state.liveRunContext = null;
       state.scores = {};
       state.scoreOpen.clear();
@@ -3371,15 +3588,18 @@
     });
 
     $('#model-strip').addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-site]');
+      const btn = e.target.closest('[data-result-toggle]');
       if (!btn) return;
-      const id = btn.dataset.site;
-      if (state.selectedSiteIds.has(id)) state.selectedSiteIds.delete(id);
-      else state.selectedSiteIds.add(id);
-      saveSettings();
+      const slotKey = btn.dataset.resultToggle;
+      if (state.hiddenLiveResultKeys.has(slotKey)) state.hiddenLiveResultKeys.delete(slotKey);
+      else state.hiddenLiveResultKeys.add(slotKey);
+      if (state.hiddenLiveResultKeys.has(state.winnerKey)) state.winnerKey = '';
       renderModelStrip();
       renderCompare();
-      renderTestModelPicker();
+      updateResultActions();
+      const selectedCount = visibleResultSlots().length;
+      const totalCount = displaySlots().length;
+      $('#run-status').textContent = `已选 ${selectedCount}/${totalCount} 个模型结果；发布时只包含已选结果`;
     });
 
     $('#test-model-list').addEventListener('change', (e) => {
@@ -3461,6 +3681,34 @@
     $('#btn-confirm-publish').addEventListener('click', publishLiveResults);
     $('#btn-view-published').addEventListener('click', restorePublishedResults);
     $('#btn-export').addEventListener('click', exportResults);
+    $('#btn-dual-compare')?.addEventListener('click', () => renderDualCompare('case'));
+    $('#btn-close-dual')?.addEventListener('click', () => hideDualCompare('case'));
+    $('#dual-left')?.addEventListener('change', (e) => {
+      state.dualLeft = e.target.value;
+      renderDualCompare('case');
+    });
+    $('#dual-right')?.addEventListener('change', (e) => {
+      state.dualRight = e.target.value;
+      renderDualCompare('case');
+    });
+    $('#dual-sync-scroll')?.addEventListener('change', (e) => {
+      state.dualSyncScroll = !!e.target.checked;
+      renderDualCompare('case');
+    });
+    $('#btn-test-dual')?.addEventListener('click', () => renderDualCompare('test'));
+    $('#btn-test-close-dual')?.addEventListener('click', () => hideDualCompare('test'));
+    $('#test-dual-left')?.addEventListener('change', (e) => {
+      state.testDualLeft = e.target.value;
+      renderDualCompare('test');
+    });
+    $('#test-dual-right')?.addEventListener('change', (e) => {
+      state.testDualRight = e.target.value;
+      renderDualCompare('test');
+    });
+    $('#test-dual-sync-scroll')?.addEventListener('change', (e) => {
+      state.testDualSyncScroll = !!e.target.checked;
+      renderDualCompare('test');
+    });
     $('#btn-copy-prompt').addEventListener('click', async () => {
       const c = activeCase();
       if (!c) return;
@@ -3754,6 +4002,11 @@
         scoreToggle.setAttribute('aria-expanded', String(open));
         return;
       }
+      const pick = e.target.closest('[data-pick-winner]');
+      if (pick) {
+        setWinner(pick.dataset.pickWinner, 'case');
+        return;
+      }
       const fs = e.target.closest('[data-fs]');
       if (fs) {
         openFullscreen(fs.dataset.fs, state.resultOrigin === 'published' ? 'published' : 'case');
@@ -3806,6 +4059,11 @@
       if (viewBtn) {
         state.testViewModes[viewBtn.dataset.testView] = viewBtn.dataset.mode;
         updateCardView(viewBtn.dataset.testView, 'test');
+        return;
+      }
+      const pick = e.target.closest('[data-test-pick-winner]');
+      if (pick) {
+        setWinner(pick.dataset.testPickWinner, 'test');
         return;
       }
       const fs = e.target.closest('[data-test-fs]');
