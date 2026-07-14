@@ -106,6 +106,7 @@
           <div class="hint" id="run-status">正在读取题库结果…</div>
           <div class="actions">
             <button type="button" class="ghost-btn hidden" id="btn-view-published">返回精选结果</button>
+            <button type="button" class="ghost-btn result-action hidden" id="btn-dual-compare">双列对照</button>
             <button type="button" class="ghost-btn result-action hidden" id="btn-export">导出结果</button>
             <button type="button" class="ghost-btn result-action hidden" id="btn-contribute">分享本次结果</button>
             <button type="button" class="ghost-btn" id="btn-run">用本题复跑</button>
@@ -114,6 +115,36 @@
         </div>
 
         <div class="model-strip hidden" id="model-strip"></div>
+
+        <div class="dual-compare hidden" id="dual-compare" aria-label="双列对照">
+          <div class="dual-bar">
+            <div class="dual-picks">
+              <label>
+                <span>左栏</span>
+                <select id="dual-left" aria-label="左栏模型"></select>
+              </label>
+              <label>
+                <span>右栏</span>
+                <select id="dual-right" aria-label="右栏模型"></select>
+              </label>
+              <label class="dual-sync">
+                <input type="checkbox" id="dual-sync-scroll" checked />
+                同步滚动
+              </label>
+            </div>
+            <button type="button" class="ghost-btn mini" id="btn-close-dual">关闭对照</button>
+          </div>
+          <div class="dual-panes">
+            <div class="dual-pane">
+              <div class="dual-pane-head" id="dual-left-head">—</div>
+              <div class="dual-pane-body" id="dual-left-body"></div>
+            </div>
+            <div class="dual-pane">
+              <div class="dual-pane-head" id="dual-right-head">—</div>
+              <div class="dual-pane-body" id="dual-right-body"></div>
+            </div>
+          </div>
+        </div>
 
         <div class="compare published-compare" id="compare" aria-live="polite"></div>
 
@@ -170,8 +201,38 @@
       <div class="toolbar test-toolbar">
         <div class="hint" id="test-run-status">选择模型后运行</div>
         <div class="actions">
+          <button type="button" class="ghost-btn test-result-action hidden" id="btn-test-dual">双列对照</button>
           <button type="button" class="ghost-btn test-result-action hidden" id="btn-test-export">导出结果</button>
           <button type="button" class="ghost-btn test-result-action hidden" id="btn-test-contribute">分享本次结果</button>
+        </div>
+      </div>
+      <div class="dual-compare hidden" id="test-dual-compare" aria-label="自由对比双列对照">
+        <div class="dual-bar">
+          <div class="dual-picks">
+            <label>
+              <span>左栏</span>
+              <select id="test-dual-left" aria-label="左栏模型"></select>
+            </label>
+            <label>
+              <span>右栏</span>
+              <select id="test-dual-right" aria-label="右栏模型"></select>
+            </label>
+            <label class="dual-sync">
+              <input type="checkbox" id="test-dual-sync-scroll" checked />
+              同步滚动
+            </label>
+          </div>
+          <button type="button" class="ghost-btn mini" id="btn-test-close-dual">关闭对照</button>
+        </div>
+        <div class="dual-panes">
+          <div class="dual-pane">
+            <div class="dual-pane-head" id="test-dual-left-head">—</div>
+            <div class="dual-pane-body" id="test-dual-left-body"></div>
+          </div>
+          <div class="dual-pane">
+            <div class="dual-pane-head" id="test-dual-right-head">—</div>
+            <div class="dual-pane-body" id="test-dual-right-body"></div>
+          </div>
         </div>
       </div>
       <div class="compare" id="test-compare"></div>
@@ -497,6 +558,7 @@
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <script src="/providers.js"></script>
   <script src="/prompt-library.js"></script>
+  <script src="/output-classifier.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -10,6 +10,7 @@ const cookieParser = require('cookie-parser');
 const { Agent, fetch: undiciFetch } = require('undici');
 const db = require('./lib/db');
 const { enrichCaseFromPrompt } = require('./lib/enrich');
+const { classifyModelOutput, inferRequestedOutputType } = require('./public/output-classifier');
 
 const PORT = Number(process.env.PORT || 3168);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -24,6 +25,7 @@ const configuredCustomConcurrency = Number(process.env.BENCHMARK_CUSTOM_RUN_CONC
 const CUSTOM_RUN_CONCURRENCY = Number.isFinite(configuredCustomConcurrency) && configuredCustomConcurrency > 0
   ? Math.floor(configuredCustomConcurrency)
   : 32;
+const MAX_PUBLISHED_RUN_RESULTS = 32;
 const customRunConcurrency = new Map();
 const privateNetworkBlockList = new net.BlockList();
 [
@@ -276,13 +278,20 @@ function previewResultAt(results, rawIndex) {
 }
 
 function sendSharedPreview(res, row, title) {
-  const artifact = row.outputType === 'html' ? extractSharedPreviewMarkup(row.content, title) : '';
+  const declaredHtml = row.outputType === 'html';
+  const detected = declaredHtml ? null : classifyModelOutput(row.content);
+  const autoDetected = detected?.kind === 'html' || detected?.kind === 'svg';
+  const artifactSource = declaredHtml ? row.content : autoDetected ? detected.source : '';
+  const artifact = artifactSource ? extractSharedPreviewMarkup(artifactSource, title) : '';
+  const allowScripts = !!artifact && declaredHtml;
   const previewDocument = artifact || sharedTextPreviewDocument(row.content, title);
   const safeTitle = escapePreviewHtml(title || (artifact ? '模型输出预览' : '模型输出原文'));
   const shell = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${safeTitle}</title><style>
     html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#fff}iframe{display:block;width:100%;height:100%;border:0;background:#fff}
-  </style></head><body><iframe sandbox="${artifact ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" srcdoc="${escapePreviewHtml(previewDocument)}" title="${safeTitle}"></iframe></body></html>`;
-  const policy = "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'; frame-src 'self'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com";
+  </style></head><body><iframe sandbox="${allowScripts ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" srcdoc="${escapePreviewHtml(previewDocument)}" title="${safeTitle}"></iframe></body></html>`;
+  const policy = allowScripts
+    ? "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'; frame-src 'self'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src data: https://fonts.gstatic.com; script-src 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com"
+    : "default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'; frame-src 'self'; connect-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'none'";
   res.set({
     'Cache-Control': 'no-store',
     'Content-Security-Policy': policy,
@@ -297,7 +306,7 @@ function sendSharedPreview(res, row, title) {
 
 function effectiveCaseSystem(c) {
   const system = c?.system || '';
-  return c?.outputType === 'html' ? [HTML_OUTPUT_SYSTEM, system].filter(Boolean).join('\n\n') : system;
+  return inferRequestedOutputType(c) === 'html' ? [HTML_OUTPUT_SYSTEM, system].filter(Boolean).join('\n\n') : system;
 }
 
 /** Strip Bearer prefix, whitespace; reject URL-like keys (common paste mistake). */
@@ -1521,12 +1530,16 @@ app.post('/api/admin/cases/:id/published-runs', requireAdmin, (req, res) => {
     res.status(409).json({ error: '实际 System Prompt 与当前题目不一致，请重新运行后再发布' });
     return;
   }
-  if (!Array.isArray(body.results) || !body.results.length || body.results.length > 8) {
-    res.status(400).json({ error: 'results 必须包含 1–8 个模型结果' });
+  if (
+    !Array.isArray(body.results) ||
+    !body.results.length ||
+    body.results.length > MAX_PUBLISHED_RUN_RESULTS
+  ) {
+    res.status(400).json({ error: `results 必须包含 1–${MAX_PUBLISHED_RUN_RESULTS} 个模型结果` });
     return;
   }
 
-  const publishedOutputType = c.outputType === 'html' ? 'html' : 'text';
+  const publishedOutputType = inferRequestedOutputType(c);
   const results = sanitizePublishedRunResults(body.results).map((result) => ({
     ...result,
     outputType: publishedOutputType,
